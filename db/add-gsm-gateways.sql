@@ -1,0 +1,27 @@
+-- -- ─────────────────────────────────────────────────────────────────
+-- -- Migration: add GSM gateways + campaign_gateways tables
+-- -- Run once on an existing database:
+-- --   mysql -u root -p callcenter < db/add-gsm-gateways.sql
+-- -- ─────────────────────────────────────────────────────────────────
+
+-- CREATE TABLE IF NOT EXISTS gsm_gateways (
+--   id         INT AUTO_INCREMENT PRIMARY KEY,
+--   name       VARCHAR(100) NOT NULL,
+--   ip         VARCHAR(64)  NOT NULL,
+--   port       SMALLINT UNSIGNED NOT NULL DEFAULT 5060,
+--   channels   SMALLINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'Number of SIM/GSM channels',
+--   status     ENUM('active','inactive') NOT NULL DEFAULT 'active',
+--   notes      VARCHAR(255) NULL,
+--   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- CREATE TABLE IF NOT EXISTS campaign_gateways (
+--   id          INT AUTO_INCREMENT PRIMARY KEY,
+--   campaign_id INT NOT NULL,
+--   gateway_id  INT NOT NULL,
+--   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   UNIQUE KEY uq_cg (campaign_id, gateway_id),
+--   CONSTRAINT fk_cg_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+--   CONSTRAINT fk_cg_gateway  FOREIGN KEY (gateway_id)  REFERENCES gsm_gateways(id) ON DELETE CASCADE
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
