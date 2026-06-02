@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { query, pool } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 
@@ -62,15 +63,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       }
     }
 
-    // Audit logging must never break the actual update.
-    try {
-      await conn.execute(
-        'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-        [u.id, 'update_campaign', 'campaigns', id],
-      );
-    } catch (auditErr) {
-      console.warn('[campaign PATCH] audit log insert failed (non-fatal):', auditErr);
-    }
+    await logAudit(
+      { userId: u.id, action: 'update_campaign', entity: 'campaigns', entityId: id },
+      conn,
+    );
 
     await conn.commit();
     return ok({ ok: true });

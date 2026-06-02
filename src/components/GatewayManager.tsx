@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
+import { Button } from '@/components/Button';
 
 export interface GsmGateway {
   id:         number;
@@ -268,14 +269,12 @@ export function GatewayManager() {
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
 
             <div className="mt-5 flex gap-2">
-              <button onClick={save} disabled={saving}
-                className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+              <Button onClick={save} loading={saving} className="flex-1">
                 {saving ? 'Saving…' : 'Save'}
-              </button>
-              <button onClick={() => setShowForm(false)}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50">
+              </Button>
+              <Button variant="secondary" onClick={() => setShowForm(false)}>
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         </div>

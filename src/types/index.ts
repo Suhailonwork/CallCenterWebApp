@@ -156,10 +156,13 @@ export interface CallReportRow {
 
 export interface AuditRow {
   id: number;
+  user_id: number | null;
   user_name: string | null;
   action: string;
   entity: string | null;
   entity_id: number | null;
+  details: unknown | null;
+  ip: string | null;
   created_at: string;
 }
 

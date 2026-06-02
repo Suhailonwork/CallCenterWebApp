@@ -9,8 +9,10 @@ export async function GET() {
   const u = await authenticate(['manager']);
   if (isError(u)) return u;
 
-  const tls = await tlsUnderManager(u.id);
-  const employees = await employeesUnderManager(u.id);
+  const [tls, employees] = await Promise.all([
+    tlsUnderManager(u.id),
+    employeesUnderManager(u.id),
+  ]);
   const stats = await statsForEmployees(employees.map((e) => e.id));
   return ok({ tls, employees, stats });
 }

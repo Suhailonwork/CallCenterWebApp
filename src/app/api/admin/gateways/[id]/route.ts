@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { pool } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 import { provisionGatewayEndpoint, deprovisionGatewayEndpoint, gwEndpoint } from '@/lib/asteriskRealtime';
 
 export const runtime = 'nodejs';
@@ -81,10 +82,7 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
 
   try {
     await pool.execute('DELETE FROM gsm_gateways WHERE id = ?', [id]);
-    await pool.execute(
-      'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-      [u.id, 'delete_gateway', 'gsm_gateways', id],
-    );
+    await logAudit({ userId: u.id, action: 'delete_gateway', entity: 'gsm_gateways', entityId: id });
     // Deprovision using auto-generated name — always matches what was provisioned
     await deprovisionGatewayEndpoint(id).catch(() => {});
     return ok({ ok: true });

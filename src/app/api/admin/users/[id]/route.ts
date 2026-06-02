@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { query, queryOne } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 import { hashPassword } from '@/lib/password';
 
 export const runtime = 'nodejs';
@@ -64,10 +65,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (sets.length === 0) return fail('Nothing to update');
   vals.push(id);
   await query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, vals);
-  await query(
-    'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-    [u.id, 'update_user', 'users', id],
-  );
+  await logAudit({ userId: u.id, action: 'update_user', entity: 'users', entityId: id });
   return ok({ ok: true });
 }
 
@@ -81,9 +79,6 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
   if (id === u.id) return fail('You cannot deactivate your own account');
 
   await query('UPDATE users SET is_active = 0 WHERE id = ?', [id]);
-  await query(
-    'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-    [u.id, 'deactivate_user', 'users', id],
-  );
+  await logAudit({ userId: u.id, action: 'deactivate_user', entity: 'users', entityId: id });
   return ok({ ok: true });
 }

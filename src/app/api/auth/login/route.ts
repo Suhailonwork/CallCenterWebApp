@@ -4,6 +4,7 @@ import { verifyPassword } from '@/lib/password';
 import { signToken, TOKEN_COOKIE } from '@/lib/jwt';
 import { ROLE_HOME } from '@/lib/rbac';
 import { ok, fail } from '@/lib/api';
+import { logAudit } from '@/lib/audit';
 import { openSession } from '@/lib/sessions';
 import type { Role } from '@/types';
 
@@ -34,15 +35,23 @@ export async function POST(req: Request) {
     'SELECT id, name, email, role, password_hash, is_active FROM users WHERE email = ?',
     [email],
   );
-  if (!user || !user.is_active) return fail('Invalid credentials', 401);
+  if (!user || !user.is_active) {
+    await logAudit({ userId: user?.id ?? null, action: 'login_failed', entity: 'users', details: { email } });
+    return fail('Invalid credentials', 401);
+  }
 
   const valid = await verifyPassword(password, user.password_hash);
-  if (!valid) return fail('Invalid credentials', 401);
+  if (!valid) {
+    await logAudit({ userId: user.id, action: 'login_failed', entity: 'users', entityId: user.id, details: { email } });
+    return fail('Invalid credentials', 401);
+  }
 
   // Start a login session for agents (used for login-hours tracking).
   if (user.role === 'employee') {
     await openSession(user.id);
   }
+
+  await logAudit({ userId: user.id, action: 'login', entity: 'users', entityId: user.id });
 
   const token = await signToken({
     sub: String(user.id),

@@ -6,22 +6,29 @@ import type { EmployeeStat, SystemKpis } from '@/types';
 export async function statsForEmployees(ids: number[]): Promise<EmployeeStat[]> {
   if (ids.length === 0) return [];
   const placeholders = ids.map(() => '?').join(',');
-  const rows = await query<any>(
-    `SELECT u.id, u.name,
-            COALESCE(e.status, 'offline') AS status,
-            COUNT(c.id) AS calls,
-            COALESCE(SUM(c.status = 'connected'), 0) AS connected,
-            COALESCE(SUM(c.duration_seconds), 0) AS talk
-       FROM users u
-       LEFT JOIN employees e ON e.user_id = u.id
-       LEFT JOIN calls c
-         ON c.employee_id = u.id AND DATE(c.created_at) = CURDATE()
-      WHERE u.id IN (${placeholders})
-      GROUP BY u.id, u.name, e.status
-      ORDER BY u.name`,
-    ids,
-  );
-  const loginSecs = await loginSecondsByEmployee(ids);
+  // The per-employee call rollup and the login-seconds lookup are independent —
+  // run them concurrently. The calls join uses a sargable created_at range so it
+  // can use the index instead of DATE(c.created_at).
+  const [rows, loginSecs] = await Promise.all([
+    query<any>(
+      `SELECT u.id, u.name,
+              COALESCE(e.status, 'offline') AS status,
+              COUNT(c.id) AS calls,
+              COALESCE(SUM(c.status = 'connected'), 0) AS connected,
+              COALESCE(SUM(c.duration_seconds), 0) AS talk
+         FROM users u
+         LEFT JOIN employees e ON e.user_id = u.id
+         LEFT JOIN calls c
+           ON c.employee_id = u.id
+          AND c.created_at >= CURDATE()
+          AND c.created_at < CURDATE() + INTERVAL 1 DAY
+        WHERE u.id IN (${placeholders})
+        GROUP BY u.id, u.name, e.status
+        ORDER BY u.name`,
+      ids,
+    ),
+    loginSecondsByEmployee(ids),
+  ]);
   return rows.map((r) => {
     const calls = Number(r.calls);
     const connected = Number(r.connected);
@@ -48,9 +55,11 @@ export async function systemKpis(): Promise<SystemKpis> {
        (SELECT COUNT(*) FROM teams) AS teams,
        (SELECT COUNT(*) FROM campaigns) AS campaigns,
        (SELECT COUNT(*) FROM csv_data) AS contacts,
-       (SELECT COUNT(*) FROM calls WHERE DATE(created_at)=CURDATE()) AS callsToday,
+       (SELECT COUNT(*) FROM calls
+         WHERE created_at >= CURDATE() AND created_at < CURDATE() + INTERVAL 1 DAY) AS callsToday,
        (SELECT COALESCE(SUM(status='connected'),0)
-          FROM calls WHERE DATE(created_at)=CURDATE()) AS connectedToday`,
+          FROM calls
+         WHERE created_at >= CURDATE() AND created_at < CURDATE() + INTERVAL 1 DAY) AS connectedToday`,
   );
   const callsToday = Number(r?.callsToday ?? 0);
   const connectedToday = Number(r?.connectedToday ?? 0);

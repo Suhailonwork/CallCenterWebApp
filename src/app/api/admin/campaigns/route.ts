@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { query, pool } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 import type { CampaignRow } from '@/types';
 
 export const runtime = 'nodejs';
@@ -78,9 +79,15 @@ export async function POST(req: Request) {
       );
     }
 
-    await conn.execute(
-      'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-      [u.id, 'create_campaign', 'campaigns', campaignId],
+    await logAudit(
+      {
+        userId: u.id,
+        action: 'create_campaign',
+        entity: 'campaigns',
+        entityId: campaignId,
+        details: { name: d.name, dialer_type: d.dialer_type, gatewayIds: d.gatewayIds },
+      },
+      conn,
     );
 
     await conn.commit();

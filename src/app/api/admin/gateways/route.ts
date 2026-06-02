@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { pool } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 import type { ResultSetHeader } from 'mysql2';
 import { provisionGatewayEndpoint, gwEndpoint } from '@/lib/asteriskRealtime';
 
@@ -59,10 +60,13 @@ export async function POST(req: Request) {
     const endpoint = gwEndpoint(newId);
     await pool.execute('UPDATE gsm_gateways SET asterisk_endpoint = ? WHERE id = ?', [endpoint, newId]);
 
-    await pool.execute(
-      'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-      [u.id, 'create_gateway', 'gsm_gateways', newId],
-    );
+    await logAudit({
+      userId: u.id,
+      action: 'create_gateway',
+      entity: 'gsm_gateways',
+      entityId: newId,
+      details: { name: d.name, ip: d.ip, port: d.port },
+    });
 
     if (d.status === 'active') {
       try {

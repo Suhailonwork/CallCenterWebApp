@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
+import { Button } from '@/components/Button';
 
 const DEMO = [
   { role: 'Admin', email: 'admin@cc.test' },
@@ -75,13 +76,9 @@ export default function LoginPage() {
               placeholder="••••••••"
             />
           </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
+          <Button type="submit" loading={loading} className="w-full">
             {loading ? 'Signing in…' : 'Sign in'}
-          </button>
+          </Button>
         </form>
 
         <div className="mt-6 rounded-lg bg-slate-50 p-3">

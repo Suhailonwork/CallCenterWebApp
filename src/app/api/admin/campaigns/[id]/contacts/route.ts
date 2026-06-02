@@ -1,5 +1,6 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { pool } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 import { parseCsv, mapColumns } from '@/lib/csv';
 
 export const runtime = 'nodejs';
@@ -47,9 +48,15 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         [campaignId, c.phone, c.name, c.email, c.company],
       );
     }
-    await conn.execute(
-      'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-      [u.id, 'upload_contacts', 'campaigns', campaignId],
+    await logAudit(
+      {
+        userId: u.id,
+        action: 'upload_contacts',
+        entity: 'campaigns',
+        entityId: campaignId,
+        details: { imported: contacts.length },
+      },
+      conn,
     );
     await conn.commit();
     return ok({ imported: contacts.length }, 201);

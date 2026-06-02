@@ -1,9 +1,20 @@
 -- =====================================================================
---  Call Center Platform - MySQL schema
---  Run by db/migrate.mjs. WARNING: drops and recreates all tables.
+--  Call Center Platform — complete MySQL schema (single source of truth)
+--
+--  Run with:  npm run db:migrate   (executes db/migrate.mjs)
+--  WARNING: drops and recreates every table.
+--
+--  This file consolidates what used to live across many migration files
+--  (autodialer tables, GSM gateways, CSV claim columns, dialer types,
+--  agent sessions and the Asterisk PJSIP realtime tables). It is the only
+--  schema file the project needs.
 -- =====================================================================
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS ps_endpoint_id_ips;
+DROP TABLE IF EXISTS ps_endpoints;
+DROP TABLE IF EXISTS ps_auths;
+DROP TABLE IF EXISTS ps_aors;
 DROP TABLE IF EXISTS agent_sessions;
 DROP TABLE IF EXISTS campaign_gateways;
 DROP TABLE IF EXISTS gsm_gateways;
@@ -81,7 +92,8 @@ CREATE TABLE campaigns (
   retry_count         INT NOT NULL DEFAULT 0,
   retry_delay_minutes INT NOT NULL DEFAULT 60,
   created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_campaigns_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+  CONSTRAINT fk_campaigns_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_campaigns_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- csv_data: uploaded contacts belonging to a campaign ----
@@ -100,7 +112,9 @@ CREATE TABLE csv_data (
   created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_csv_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
   CONSTRAINT fk_csv_assigned FOREIGN KEY (assigned_to) REFERENCES users(id)     ON DELETE SET NULL,
-  INDEX idx_csv_campaign_called (campaign_id, called)
+  -- Hot path: the auto-dialer claims "the next un-called contact for a campaign".
+  INDEX idx_csv_campaign_called (campaign_id, called),
+  INDEX idx_csv_assigned (assigned_to)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- calls: one row per call attempt ----
@@ -123,6 +137,7 @@ CREATE TABLE calls (
   CONSTRAINT fk_calls_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE SET NULL,
   CONSTRAINT fk_calls_csv      FOREIGN KEY (csv_data_id) REFERENCES csv_data(id)  ON DELETE SET NULL,
   INDEX idx_calls_employee_created (employee_id, created_at),
+  INDEX idx_calls_campaign_created (campaign_id, created_at),
   INDEX idx_calls_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -166,7 +181,8 @@ CREATE TABLE breaks (
   approved_by INT NULL,
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_breaks_employee FOREIGN KEY (employee_id) REFERENCES users(id) ON DELETE CASCADE,
-  CONSTRAINT fk_breaks_approver FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
+  CONSTRAINT fk_breaks_approver FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_breaks_employee_status (employee_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- performance: daily rollup per employee ----
@@ -184,7 +200,7 @@ CREATE TABLE performance (
   CONSTRAINT fk_perf_employee FOREIGN KEY (employee_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- audit_logs: security-relevant actions ----
+-- ---- audit_logs: security-relevant actions (who did what, from where) ----
 CREATE TABLE audit_logs (
   id         INT AUTO_INCREMENT PRIMARY KEY,
   user_id    INT NULL,
@@ -195,7 +211,10 @@ CREATE TABLE audit_logs (
   ip         VARCHAR(64) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_audit_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
-  INDEX idx_audit_created (created_at)
+  INDEX idx_audit_created (created_at),
+  INDEX idx_audit_user (user_id),
+  INDEX idx_audit_action (action),
+  INDEX idx_audit_entity (entity, entity_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- settings: system configuration (key/value) ----
@@ -216,21 +235,22 @@ CREATE TABLE campaign_assignments (
   UNIQUE KEY uq_assignment (campaign_id, employee_id),
   CONSTRAINT fk_ca_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
   CONSTRAINT fk_ca_employee FOREIGN KEY (employee_id) REFERENCES users(id)     ON DELETE CASCADE,
-  CONSTRAINT fk_ca_assigner FOREIGN KEY (assigned_by) REFERENCES users(id)     ON DELETE SET NULL
+  CONSTRAINT fk_ca_assigner FOREIGN KEY (assigned_by) REFERENCES users(id)     ON DELETE SET NULL,
+  INDEX idx_ca_employee (employee_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- gsm_gateways: physical GSM/VoIP gateway devices ----
 CREATE TABLE gsm_gateways (
-  id         INT AUTO_INCREMENT PRIMARY KEY,
-  name       VARCHAR(100) NOT NULL,
-  ip         VARCHAR(64)  NOT NULL,
-  port       SMALLINT UNSIGNED NOT NULL DEFAULT 5060,
-  channels   SMALLINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'Number of SIM/GSM channels',
-  status              ENUM('active','inactive') NOT NULL DEFAULT 'active',
-  asterisk_endpoint   VARCHAR(100) NULL COMMENT 'PJSIP endpoint name in Asterisk, e.g. dinstar',
-  notes               VARCHAR(255) NULL,
-  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  id                INT AUTO_INCREMENT PRIMARY KEY,
+  name              VARCHAR(100) NOT NULL,
+  ip                VARCHAR(64)  NOT NULL,
+  port              SMALLINT UNSIGNED NOT NULL DEFAULT 5060,
+  channels          SMALLINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'Number of SIM/GSM channels',
+  status            ENUM('active','inactive') NOT NULL DEFAULT 'active',
+  asterisk_endpoint VARCHAR(100) NULL COMMENT 'PJSIP endpoint name in Asterisk, e.g. gw1',
+  notes             VARCHAR(255) NULL,
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- campaign_gateways: which gateways are assigned to a campaign ----
@@ -240,7 +260,11 @@ CREATE TABLE campaign_gateways (
   gateway_id  INT NOT NULL,
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_cg (campaign_id, gateway_id),
-  CONSTRAINT fk_
+  KEY fk_cg_gateway (gateway_id),
+  CONSTRAINT fk_cg_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id)    ON DELETE CASCADE,
+  CONSTRAINT fk_cg_gateway  FOREIGN KEY (gateway_id)  REFERENCES gsm_gateways(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---- agent_sessions: agent login / logout times (login-hours tracking) ----
 CREATE TABLE agent_sessions (
   id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -250,4 +274,81 @@ CREATE TABLE agent_sessions (
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_agent_sessions_emp (employee_id, login_at),
   CONSTRAINT fk_agent_sessions_user FOREIGN KEY (employee_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =====================================================================
+--  Asterisk PJSIP realtime tables
+--  Asterisk reads these live (via res_pjsip + sorcery), so SIP endpoints
+--  for employees and gateways are provisioned straight from the app
+--  (see src/lib/asteriskRealtime.ts) with no pjsip.conf edits / reloads.
+-- =====================================================================
+
+-- ---- ps_aors: address-of-record objects ----
+CREATE TABLE ps_aors (
+  id                   VARCHAR(40) NOT NULL PRIMARY KEY,
+  contact              VARCHAR(255) DEFAULT NULL,
+  default_expiration   INT DEFAULT NULL,
+  mailboxes            VARCHAR(80) DEFAULT NULL,
+  max_contacts         SMALLINT DEFAULT NULL,
+  minimum_expiration   INT DEFAULT NULL,
+  remove_existing      ENUM('yes','no') DEFAULT NULL,
+  qualify_frequency    INT DEFAULT NULL,
+  authenticate_qualify ENUM('yes','no') DEFAULT NULL,
+  maximum_expiration   INT DEFAULT NULL,
+  outbound_proxy       VARCHAR(40) DEFAULT NULL,
+  support_path         ENUM('yes','no') DEFAULT NULL,
+  qualify_timeout      FLOAT DEFAULT NULL,
+  voicemail_extension  VARCHAR(40) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- ps_auths: authentication objects ----
+CREATE TABLE ps_auths (
+  id             VARCHAR(40) NOT NULL PRIMARY KEY,
+  auth_type      VARCHAR(40) DEFAULT NULL,
+  nonce_lifetime SMALLINT DEFAULT NULL,
+  md5_cred       VARCHAR(40) DEFAULT NULL,
+  password       VARCHAR(80) DEFAULT NULL,
+  realm          VARCHAR(40) DEFAULT NULL,
+  username       VARCHAR(40) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- ps_endpoints: one row per SIP peer (employee WebRTC + gateways) ----
+CREATE TABLE ps_endpoints (
+  id                      VARCHAR(40) NOT NULL PRIMARY KEY,
+  transport               VARCHAR(40) DEFAULT NULL,
+  aors                    VARCHAR(200) DEFAULT NULL,
+  auth                    VARCHAR(40) DEFAULT NULL,
+  context                 VARCHAR(40) DEFAULT NULL,
+  disallow                VARCHAR(200) DEFAULT 'all',
+  allow                   VARCHAR(200) DEFAULT NULL,
+  direct_media            ENUM('yes','no') DEFAULT NULL,
+  dtmf_mode               VARCHAR(40) DEFAULT NULL,
+  force_rport             ENUM('yes','no') DEFAULT NULL,
+  ice_support             ENUM('yes','no') DEFAULT NULL,
+  identify_by             VARCHAR(40) DEFAULT NULL,
+  rewrite_contact         ENUM('yes','no') DEFAULT NULL,
+  rtp_symmetric           ENUM('yes','no') DEFAULT NULL,
+  media_encryption        VARCHAR(40) DEFAULT NULL,
+  callerid                VARCHAR(40) DEFAULT NULL,
+  from_user               VARCHAR(40) DEFAULT NULL,
+  from_domain             VARCHAR(40) DEFAULT NULL,
+  dtls_verify             VARCHAR(40) DEFAULT NULL,
+  dtls_cert_file          VARCHAR(200) DEFAULT NULL,
+  dtls_private_key        VARCHAR(200) DEFAULT NULL,
+  dtls_setup              VARCHAR(40) DEFAULT NULL,
+  dtls_auto_generate_cert ENUM('yes','no') DEFAULT NULL,
+  srtp_tag_32             ENUM('yes','no') DEFAULT NULL,
+  media_address           VARCHAR(40) DEFAULT NULL,
+  set_var                 TEXT,
+  accountcode             VARCHAR(80) DEFAULT NULL,
+  rtp_timeout             INT DEFAULT NULL,
+  webrtc                  ENUM('yes','no') DEFAULT NULL,
+  bundle                  ENUM('yes','no') DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- ps_endpoint_id_ips: identify an endpoint by source IP (gateways) ----
+CREATE TABLE ps_endpoint_id_ips (
+  id       VARCHAR(40) NOT NULL PRIMARY KEY,
+  endpoint VARCHAR(40) DEFAULT NULL,
+  `match`  VARCHAR(80) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

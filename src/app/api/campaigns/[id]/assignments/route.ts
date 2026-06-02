@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { authenticate, isError, ok, fail, type AuthedUser } from "@/lib/api";
 import { query } from "@/lib/db";
+import { logAudit } from "@/lib/audit";
 import { employeesUnderManager } from "@/lib/org";
 
 export const runtime = "nodejs";
@@ -79,9 +80,6 @@ export async function PUT(
       [id, eid, u.id],
     );
   }
-  await query(
-    "INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)",
-    [u.id, "assign_campaign", "campaigns", id],
-  );
+  await logAudit({ userId: u.id, action: "assign_campaign", entity: "campaigns", entityId: id });
   return ok({ ok: true });
 }

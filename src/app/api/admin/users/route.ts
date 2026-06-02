@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { randomBytes } from 'crypto';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { pool, queryOne } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 import { hashPassword } from '@/lib/password';
 import { listUsers, listTeams } from '@/lib/org';
 import { provisionEmployeeEndpoint } from '@/lib/asteriskRealtime';
@@ -93,9 +94,15 @@ export async function POST(req: Request) {
       await provisionEmployeeEndpoint(extension, sipPassword, conn);
     }
 
-    await conn.execute(
-      'INSERT INTO audit_logs (user_id, action, entity, entity_id) VALUES (?,?,?,?)',
-      [u.id, 'create_user', 'users', newId],
+    await logAudit(
+      {
+        userId: u.id,
+        action: 'create_user',
+        entity: 'users',
+        entityId: newId,
+        details: { role: d.role, email: d.email },
+      },
+      conn,
     );
     await conn.commit();
 

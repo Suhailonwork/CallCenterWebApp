@@ -1,5 +1,5 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { query } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
 import { getSettings, updateSettings } from '@/lib/settings';
 
 export const runtime = 'nodejs';
@@ -38,9 +38,11 @@ export async function PUT(req: Request) {
   if (Object.keys(updates).length === 0) return fail('No valid settings provided');
 
   await updateSettings(updates);
-  await query(
-    'INSERT INTO audit_logs (user_id, action, entity) VALUES (?,?,?)',
-    [u.id, 'update_settings', 'settings'],
-  );
+  await logAudit({
+    userId: u.id,
+    action: 'update_settings',
+    entity: 'settings',
+    details: { keys: Object.keys(updates) },
+  });
   return ok({ ok: true });
 }

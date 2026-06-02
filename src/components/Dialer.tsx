@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "react-toastify";
 import { SipPhone, type CallState } from "@/lib/sipPhone";
 import { getSocket } from "@/lib/useSocket";
+import { Button } from "@/components/Button";
 import type { Campaign, Contact, SipConfig, CallDisposition } from "@/types";
 
 const DIAL_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
@@ -684,17 +685,17 @@ export function Dialer() {
               />
             )}
 
-            <button
+            <Button
               onClick={savePostCall}
-              disabled={saving}
-              className="mt-5 w-full rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              loading={saving}
+              className="mt-5 w-full"
             >
               {saving
                 ? "Saving…"
                 : autoRunning
                   ? "Save & next call"
                   : "Save call"}
-            </button>
+            </Button>
           </div>
         </div>
       )}
