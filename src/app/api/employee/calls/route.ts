@@ -1,9 +1,9 @@
-import { z } from 'zod';
-import { authenticate, isError, ok, fail } from '@/lib/api';
-import { pool, query } from '@/lib/db';
-import { broadcastChange } from '@/lib/realtime';
+import { z } from "zod";
+import { authenticate, isError, ok, fail } from "@/lib/api";
+import { pool, query } from "@/lib/db";
+import { broadcastChange } from "@/lib/realtime";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
 
 const logSchema = z.object({
   phoneNumber: z.string().min(1).max(32),
@@ -11,7 +11,12 @@ const logSchema = z.object({
   campaignId: z.number().int().positive().nullable().optional(),
   csvDataId: z.number().int().positive().nullable().optional(),
   status: z.enum([
-    'connected', 'no_answer', 'busy', 'voicemail', 'failed', 'wrong_number',
+    "connected",
+    "no_answer",
+    "busy",
+    "voicemail",
+    "failed",
+    "wrong_number",
   ]),
   durationSeconds: z.number().int().min(0).max(86400),
   note: z.string().max(5000).nullable().optional(),
@@ -21,11 +26,11 @@ const logSchema = z.object({
 
 /** POST /api/employee/calls - log a finished call + note + optional follow-up. */
 export async function POST(req: Request) {
-  const user = await authenticate(['employee']);
+  const user = await authenticate(["employee"]);
   if (isError(user)) return user;
 
   const parsed = logSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return fail('Invalid call data');
+  if (!parsed.success) return fail("Invalid call data");
   const d = parsed.data;
   const duration = d.durationSeconds; // zod-validated integer - safe to inline
 
@@ -51,7 +56,30 @@ export async function POST(req: Request) {
     );
     const callId = callRes.insertId;
 
-    const followUp = d.followUpAt ? d.followUpAt.replace('T', ' ') : null;
+    // Link a pending recording (if any) for this extension + phone.
+    // We match the most recent unconsumed recording for this phone number.
+    try {
+      const [recRows]: any = await conn.execute(
+        `SELECT id, filename FROM pending_recordings
+          WHERE phone_number = ? AND consumed = 0
+          ORDER BY id DESC LIMIT 1`,
+        [d.phoneNumber],
+      );
+      if (recRows[0]) {
+        await conn.execute("UPDATE calls SET recording_url = ? WHERE id = ?", [
+          recRows[0].filename,
+          callId,
+        ]);
+        await conn.execute(
+          "UPDATE pending_recordings SET consumed = 1 WHERE id = ?",
+          [recRows[0].id],
+        );
+      }
+    } catch (e) {
+      console.error("[calls] recording link failed:", e);
+    }
+
+    const followUp = d.followUpAt ? d.followUpAt.replace("T", " ") : null;
 
     const [noteRes]: any = await conn.execute(
       `INSERT INTO call_notes (call_id, employee_id, note, tags, follow_up_at)
@@ -61,7 +89,7 @@ export async function POST(req: Request) {
 
     if (d.csvDataId) {
       await conn.execute(
-        'UPDATE csv_data SET called = 1, call_status = ? WHERE id = ?',
+        "UPDATE csv_data SET called = 1, call_status = ? WHERE id = ?",
         [d.status, d.csvDataId],
       );
     }
@@ -71,12 +99,18 @@ export async function POST(req: Request) {
         `INSERT INTO scheduled_calls
            (call_note_id, phone_number, contact_name, scheduled_at, assigned_to, status)
          VALUES (?,?,?,?,?, 'pending')`,
-        [noteRes.insertId, d.phoneNumber, d.contactName ?? null, followUp, user.id],
+        [
+          noteRes.insertId,
+          d.phoneNumber,
+          d.contactName ?? null,
+          followUp,
+          user.id,
+        ],
       );
     }
 
     // Daily performance rollup.
-    const connected = d.status === 'connected' ? 1 : 0;
+    const connected = d.status === "connected" ? 1 : 0;
     await conn.execute(
       `INSERT INTO performance
          (employee_id, date, calls_made, calls_connected, total_duration_seconds)
@@ -95,12 +129,12 @@ export async function POST(req: Request) {
     );
 
     await conn.commit();
-    broadcastChange('calls');
+    broadcastChange("calls");
     return ok({ callId }, 201);
   } catch (err) {
     await conn.rollback();
-    console.error('[calls] log failed:', err);
-    return fail('Failed to save call', 500);
+    console.error("[calls] log failed:", err);
+    return fail("Failed to save call", 500);
   } finally {
     conn.release();
   }
@@ -108,7 +142,7 @@ export async function POST(req: Request) {
 
 /** GET /api/employee/calls - the employee's 20 most recent calls. */
 export async function GET() {
-  const user = await authenticate(['employee']);
+  const user = await authenticate(["employee"]);
   if (isError(user)) return user;
 
   const calls = await query(

@@ -360,8 +360,10 @@ export function Dialer() {
     }
   }
 
-  function manualCall() {
-    if (manualNumber.trim()) startCall(manualNumber.trim(), null, null, null);
+function manualCall() {
+    if (manualNumber.trim()) {
+      startCall(manualNumber.trim(), null, campaignRef.current?.id ?? null, null);
+    }
   }
 
   async function savePostCall() {

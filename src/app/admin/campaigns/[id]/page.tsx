@@ -195,7 +195,11 @@ export default function CampaignDetailPage() {
                 <tr key={c.id} className="border-b border-slate-100">
                   <td className="px-3 py-2 font-medium">
                     <button
-                      onClick={() => router.push(`/admin/customers/${encodeURIComponent(c.phone_number)}`)}
+                      onClick={() =>
+                        router.push(
+                          `/admin/customers/${encodeURIComponent(c.phone_number)}`,
+                        )
+                      }
                       className="text-indigo-600 hover:underline"
                     >
                       {c.phone_number}
@@ -219,7 +223,11 @@ export default function CampaignDetailPage() {
                   </td>
                   <td className="px-3 py-2">
                     {c.recording_url ? (
-                      <audio controls src={c.recording_url} className="h-8" />
+                      <audio
+                        controls
+                        src={`/api/recordings/${encodeURIComponent(c.recording_url)}`}
+                        className="h-8"
+                      />
                     ) : (
                       <span className="text-slate-400">—</span>
                     )}

@@ -64,6 +64,20 @@ module.exports = function startAri(config) {
     return rows[0] ? rows[0].endpoint : null;
   }
 
+   async function isRecordingEnabledForExtension(extension) {
+     const [rows] = await db.query(
+       `SELECT c.recording_enabled
+         FROM employees e
+         JOIN campaign_assignments ca ON ca.employee_id = e.user_id
+         JOIN campaigns c             ON c.id = ca.campaign_id
+        WHERE e.sip_extension = ?
+        ORDER BY c.recording_enabled DESC
+        LIMIT 1`,
+       [extension],
+     );
+     return rows[0] ? Number(rows[0].recording_enabled) === 1 : false;
+   }
+
   function connect() {
     ari
       .connect(ariUrl, ariUser, ariPass)
@@ -162,6 +176,7 @@ module.exports = function startAri(config) {
     };
 
     // Far end answered -> stop ringback then bridge
+    // Far end answered -> stop ringback then bridge
     outLeg.on("StasisStart", async () => {
       if (done) return;
       try {
@@ -175,6 +190,39 @@ module.exports = function startAri(config) {
         /* ignore */
       }
       console.log("[ari] outbound connected");
+
+      // ── Conditional recording: only if the caller's campaign has it ON ──
+      if (callerExt) {
+        try {
+          const recOn = await isRecordingEnabledForExtension(callerExt);
+          if (recOn) {
+            // Predictable filename: rec-{ext}-{dialed}-{epoch}
+            const fname = "rec-" + callerExt + "-" + dialed + "-" + Date.now();
+            await bridge.record({
+              name: fname,
+              format: "wav",
+              ifExists: "overwrite",
+            });
+
+            console.log("[ari] recording started: " + fname + ".wav");
+               try {
+                 await db.query(
+                   `INSERT INTO pending_recordings (extension, phone_number, filename)
+                 VALUES (?,?,?)`,
+                   [callerExt, dialed, fname + ".wav"],
+                 );
+               } catch (e) {
+                 console.error(
+                   "[ari] pending_recording insert failed: " + (e && e.message),
+                 );
+               }
+          } else {
+            console.log("[ari] recording OFF for ext " + callerExt);
+          }
+        } catch (e) {
+          console.error("[ari] recording start failed: " + (e && e.message));
+        }
+      }
     });
 
     outLeg.on("StasisEnd", end);
