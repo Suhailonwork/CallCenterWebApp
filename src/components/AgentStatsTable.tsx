@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useSocketEvent } from '@/lib/useSocket';
 
 type Agent = {
   id: number;
@@ -48,6 +49,14 @@ const ROLE_BADGE: Record<string, string> = {
 
 export default function AgentStatsTable() {
   const [agents, setAgents] = useState<Agent[]>([]);
+    const [liveStates, setLiveStates] = useState<Record<number, string>>({});
+  useSocketEvent('agents-updated', (list: { id: number; state: string }[]) => {
+    const map: Record<number, string> = {};
+    (Array.isArray(list) ? list : []).forEach((a) => {
+      map[a.id] = a.state;
+    });
+    setLiveStates(map);
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -114,13 +123,27 @@ export default function AgentStatsTable() {
                   {ROLE_LABELS[a.role] ?? a.role}
                 </span>
               </td>
-              <td className="px-4 py-3">
-                <span className="inline-flex items-center gap-2 text-gray-700">
-                  <span
-                    className={`h-2 w-2 rounded-full ${STATUS_DOT[a.status] ?? 'bg-gray-400'}`}
-                  />
-                  {a.status}
-                </span>
+          <td className="px-4 py-3">
+                {(() => {
+                  const live = liveStates[a.id]; // online / idle / on-call (socket se)
+                  const isOnline = !!live;
+                  const label = !isOnline
+                    ? 'offline'
+                    : live === 'on-call'
+                      ? 'on call'
+                      : 'online';
+                  const dot = !isOnline
+                    ? 'bg-gray-400'
+                    : live === 'on-call'
+                      ? 'bg-blue-500'
+                      : 'bg-green-500';
+                  return (
+                    <span className="inline-flex items-center gap-2 text-gray-700">
+                      <span className={`h-2 w-2 rounded-full ${dot}`} />
+                      {label}
+                    </span>
+                  );
+                })()}
               </td>
               <td className="px-4 py-3 text-gray-700">{a.calls}</td>
               <td className="px-4 py-3 text-gray-700">{a.connected}</td>

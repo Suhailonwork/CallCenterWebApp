@@ -47,6 +47,7 @@ const createSchema = z.object({
   script:      z.string().max(4000).nullable().optional(),
   dialer_type: z.enum(DIALER_TYPES).optional().default('manual'),
   gatewayIds:  z.array(z.number().int().positive()).optional().default([]),
+  recording_enabled: z.boolean().optional().default(false),
 });
 
 /** POST /api/admin/campaigns - create a campaign with optional gateway assignments. */
@@ -63,9 +64,9 @@ export async function POST(req: Request) {
     await conn.beginTransaction();
 
     const [res]: any = await conn.execute(
-      `INSERT INTO campaigns (name, description, script, created_by, status, dialer_type)
-       VALUES (?,?,?,?, 'active', ?)`,
-      [d.name, d.description ?? null, d.script ?? null, u.id, d.dialer_type],
+      `INSERT INTO campaigns (name, description, script, created_by, status, dialer_type, recording_enabled)
+       VALUES (?,?,?,?, 'active', ?, ?)`,
+      [d.name, d.description ?? null, d.script ?? null, u.id, d.dialer_type, d.recording_enabled ? 1 : 0],
     );
     const campaignId: number = res.insertId;
 
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
 
     await conn.commit();
     return ok({ id: campaignId }, 201);
-  } catch (e) {
+} catch (e) {
     await conn.rollback();
     console.error('[campaigns] create failed:', e);
     return fail('Failed to create campaign', 500);
