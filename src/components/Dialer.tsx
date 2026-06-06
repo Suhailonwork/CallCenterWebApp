@@ -1,0 +1,706 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "react-toastify";
+import { SipPhone, type CallState } from "@/lib/sipPhone";
+import { getSocket } from "@/lib/useSocket";
+import { Button } from "@/components/Button";
+import type { Campaign, Contact, SipConfig, CallDisposition } from "@/types";
+
+const DIAL_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
+
+const DIALER_LABELS: Record<string, string> = {
+  predictive: 'Predictive Dialer',
+  manual:     'Manual Dialer',
+  inbound:    'Inbound Dialer',
+  ratio:      'Ratio Dialer',
+};
+
+const DISPOSITIONS: { value: CallDisposition; label: string }[] = [
+  { value: "connected", label: "Connected" },
+  { value: "no_answer", label: "No Answer" },
+  { value: "busy", label: "Busy" },
+  { value: "voicemail", label: "Voicemail" },
+  { value: "wrong_number", label: "Wrong Number" },
+  { value: "failed", label: "Failed" },
+];
+
+const STATE_LABEL: Record<CallState, string> = {
+  idle: "Idle",
+  connecting: "Calling…",
+  ringing: "Ringing…",
+  "in-call": "Connected",
+  ended: "Call ended",
+};
+
+function fmt(sec: number) {
+  const m = Math.floor(sec / 60)
+    .toString()
+    .padStart(2, "0");
+  const s = Math.floor(sec % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function causeToDisposition(answered: boolean, cause: string): CallDisposition {
+  if (answered) return "connected";
+  const c = (cause || "").toLowerCase();
+  if (c.includes("busy")) return "busy";
+  if (
+    c.includes("answer") ||
+    c.includes("cancel") ||
+    c.includes("unavailable") ||
+    c.includes("rejected")
+  )
+    return "no_answer";
+  return "failed";
+}
+
+interface CallMeta {
+  placedAt: number;
+  answeredAt: number | null;
+  phoneNumber: string;
+  contactName: string | null;
+  campaignId: number | null;
+  csvDataId: number | null;
+}
+
+interface PostCall {
+  phoneNumber: string;
+  contactName: string | null;
+  campaignId: number | null;
+  csvDataId: number | null;
+  durationSeconds: number;
+  defaultDisposition: CallDisposition;
+}
+
+export function Dialer() {
+  const [sip, setSip] = useState<SipConfig | null>(null);
+  const [registered, setRegistered] = useState(false);
+  const [callState, setCallState] = useState<CallState>("idle");
+  const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [campaignsLoaded, setCampaignsLoaded] = useState(false);
+  const [contact, setContact] = useState<Contact | null>(null);
+  const [autoRunning, setAutoRunning] = useState(false);
+  const [complete, setComplete] = useState(false);
+  const [gatewayReachable, setGatewayReachable] = useState<boolean | null>(null);
+  const [gatewayWarning, setGatewayWarning] = useState<string | null>(null);
+  const [manualNumber, setManualNumber] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const [sessionCalls, setSessionCalls] = useState(0);
+  const [postCall, setPostCall] = useState<PostCall | null>(null);
+
+  // post-call wrap-up form
+  const [pcDisposition, setPcDisposition] =
+    useState<CallDisposition>("connected");
+  const [pcNote, setPcNote] = useState("");
+  const [pcTags, setPcTags] = useState("");
+  const [pcSchedule, setPcSchedule] = useState(false);
+  const [pcFollowUpAt, setPcFollowUpAt] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const phoneRef = useRef<SipPhone | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const metaRef = useRef<CallMeta | null>(null);
+  const sipRef = useRef<SipConfig | null>(null);
+  sipRef.current = sip;
+  const registeredRef = useRef(false);
+  registeredRef.current = registered;
+  const campaignRef = useRef<Campaign | null>(null);
+  campaignRef.current = campaign;
+  const autoRunningRef = useRef(false);
+  autoRunningRef.current = autoRunning;
+  const autoStartedRef = useRef(false);
+
+  const handleCallState = useCallback((s: CallState) => {
+    setCallState(s);
+    if (
+      s === "in-call" &&
+      metaRef.current &&
+      metaRef.current.answeredAt === null
+    ) {
+      metaRef.current.answeredAt = Date.now();
+    }
+  }, []);
+
+  const handleCallEnded = useCallback(
+    (info: { answered: boolean; cause: string }) => {
+      const m = metaRef.current;
+      if (!m) return;
+      const durationSeconds = m.answeredAt
+        ? Math.round((Date.now() - m.answeredAt) / 1000)
+        : 0;
+      setPostCall({
+        phoneNumber: m.phoneNumber,
+        contactName: m.contactName,
+        campaignId: m.campaignId,
+        csvDataId: m.csvDataId,
+        durationSeconds,
+        defaultDisposition: causeToDisposition(info.answered, info.cause),
+      });
+      metaRef.current = null;
+    },
+    [],
+  );
+
+  // ---- init: SIP phone + assigned campaign ----
+  useEffect(() => {
+    let phone: SipPhone | null = null;
+    (async () => {
+      try {
+        const res = await fetch("/api/employee/sip");
+        const data = await res.json();
+        if (!res.ok) {
+          toast.error(data.error ?? "Could not load SIP configuration");
+          return;
+        }
+        setSip(data);
+        if (audioRef.current) {
+          phone = new SipPhone(audioRef.current, {
+            onRegistered: setRegistered,
+            onCallState: handleCallState,
+            onCallEnded: handleCallEnded,
+          });
+          phone.start({
+            wssUrl: data.wssUrl,
+            sipUri: `sip:${data.extension}@${data.sipServer}`,
+            authUser: data.extension,
+            password: data.password,
+            displayName: data.displayName,
+          });
+          phoneRef.current = phone;
+        }
+      } catch {
+        toast.error("Failed to initialise the dialer");
+      }
+    })();
+
+    (async () => {
+      try {
+        const res = await fetch("/api/employee/campaigns");
+        const data = await res.json();
+        if (res.ok && data.campaigns?.length) setCampaign(data.campaigns[0]);
+      } catch {
+        /* ignore */
+      } finally {
+        setCampaignsLoaded(true);
+      }
+    })();
+
+    return () => {
+      phone?.stop();
+    };
+  }, [handleCallState, handleCallEnded]);
+
+  // ---- broadcast call state for live monitoring ----
+  useEffect(() => {
+    const onCall =
+      callState === "connecting" ||
+      callState === "ringing" ||
+      callState === "in-call";
+    getSocket().emit("set-state", onCall ? "on-call" : "idle");
+  }, [callState]);
+
+  // ---- call timer ----
+  useEffect(() => {
+    if (
+      callState !== "connecting" &&
+      callState !== "ringing" &&
+      callState !== "in-call"
+    ) {
+      return;
+    }
+    const t = setInterval(() => {
+      if (metaRef.current) {
+        setElapsed(Math.round((Date.now() - metaRef.current.placedAt) / 1000));
+      }
+    }, 500);
+    return () => clearInterval(t);
+  }, [callState]);
+
+  // ---- reset wrap-up form when a new call ends ----
+  useEffect(() => {
+    if (postCall) {
+      setPcDisposition(postCall.defaultDisposition);
+      setPcNote("");
+      setPcTags("");
+      setPcSchedule(false);
+      setPcFollowUpAt("");
+    }
+  }, [postCall]);
+
+  function startCall(
+    phoneNumber: string,
+    contactName: string | null,
+    cId: number | null,
+    csvId: number | null,
+  ): boolean {
+    const s = sipRef.current;
+    if (!phoneRef.current || !s) return false;
+    if (!registeredRef.current) {
+      toast.warning("Phone is not registered yet");
+      return false;
+    }
+    // Block only if we have confirmed the gateway is offline (not null/unknown)
+    if (gatewayReachable === false) {
+      toast.error(gatewayWarning ?? "Gateway is offline — cannot place call");
+      return false;
+    }
+    const target = phoneNumber.trim();
+    if (!target) return false;
+    metaRef.current = {
+      placedAt: Date.now(),
+      answeredAt: null,
+      phoneNumber: target,
+      contactName,
+      campaignId: cId,
+      csvDataId: csvId,
+    };
+    setElapsed(0);
+    // Pick the first active gateway with an asterisk_endpoint for this campaign
+    const gw = campaignRef.current?.gateways?.find((g) => g.asterisk_endpoint);
+    phoneRef.current.call(target, s.sipServer, gw?.asterisk_endpoint ?? undefined);
+    return true;
+  }
+
+  // ---- progressive auto-dialer: fetch next contact and call it ----
+  async function dialNext() {
+    if (!autoRunningRef.current) return;
+    const camp = campaignRef.current;
+    if (!camp) return;
+    try {
+      const res = await fetch(
+        `/api/employee/dialer/next?campaignId=${camp.id}`,
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "Could not load next contact");
+        return;
+      }
+      if (!data.contact) {
+        autoRunningRef.current = false;
+        setAutoRunning(false);
+        setComplete(true);
+        setContact(null);
+        toast.info("Campaign complete — every contact has been dialled");
+        return;
+      }
+      setContact(data.contact);
+      const placed = startCall(
+        data.contact.phone_number,
+        data.contact.name,
+        camp.id,
+        data.contact.id,
+      );
+      if (!placed) {
+        autoRunningRef.current = false;
+        setAutoRunning(false);
+      }
+    } catch {
+      toast.error("Network error loading the next contact");
+    }
+  }
+
+  // ---- check gateway reachability when campaign changes ----
+  useEffect(() => {
+    if (!campaign) return;
+    fetch(`/api/employee/gateway-status?campaignId=${campaign.id}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setGatewayReachable(data.reachable);
+        setGatewayWarning(data.reachable ? null : (data.reason ?? 'Gateway offline'));
+      })
+      .catch(() => {
+        setGatewayReachable(null);
+        setGatewayWarning(null);
+      });
+  }, [campaign]);
+
+  // ---- auto-start the dialer once registered + a campaign is loaded ----
+  // Only auto-start for predictive and ratio dialers; manual/inbound require agent action.
+  useEffect(() => {
+    const isAutoDialer = campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio';
+    if (registered && campaign && isAutoDialer && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      autoRunningRef.current = true;
+      setAutoRunning(true);
+      void dialNext();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registered, campaign]);
+
+  function startAuto() {
+    if (!campaign) return;
+    setComplete(false);
+    autoRunningRef.current = true;
+    setAutoRunning(true);
+    if (callState === "idle" && !postCall && !contact) void dialNext();
+  }
+
+  function stopAuto() {
+    autoRunningRef.current = false;
+    setAutoRunning(false);
+  }
+
+  function onHangup() {
+    phoneRef.current?.hangup();
+  }
+
+  const inCall =
+    callState === "connecting" ||
+    callState === "ringing" ||
+    callState === "in-call";
+
+  function pressKey(k: string) {
+    if (callState === "in-call") {
+      phoneRef.current?.sendDTMF(k);
+    } else if (!autoRunning && !inCall && !postCall) {
+      setManualNumber((n) => n + k);
+    }
+  }
+
+function manualCall() {
+    if (manualNumber.trim()) {
+      startCall(manualNumber.trim(), null, campaignRef.current?.id ?? null, null);
+    }
+  }
+
+  async function savePostCall() {
+    if (!postCall) return;
+    setSaving(true);
+    try {
+      const res = await fetch("/api/employee/calls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phoneNumber: postCall.phoneNumber,
+          contactName: postCall.contactName,
+          campaignId: postCall.campaignId,
+          csvDataId: postCall.csvDataId,
+          status: pcDisposition,
+          durationSeconds: postCall.durationSeconds,
+          note: pcNote || null,
+          tags: pcTags || null,
+          followUpAt: pcSchedule && pcFollowUpAt ? pcFollowUpAt : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "Could not save call");
+        return;
+      }
+      setSessionCalls((n) => n + 1);
+      setPostCall(null);
+      setCallState("idle");
+      setElapsed(0);
+      setContact(null);
+      if (autoRunningRef.current) void dialNext();
+    } catch {
+      toast.error("Network error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const noCampaign = campaignsLoaded && !campaign;
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <audio ref={audioRef} autoPlay muted={false} className="hidden" />
+      {gatewayWarning && (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+          ⚠ {gatewayWarning} — calls are blocked until the gateway comes online.
+        </div>
+      )}
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-xl font-semibold">
+          {campaign ? (DIALER_LABELS[campaign.dialer_type] ?? 'Dialer') : 'Dialer'}
+        </h1>
+        <span
+          className={
+            "rounded-full px-3 py-1 text-xs font-semibold " +
+            (registered
+              ? "bg-green-100 text-green-700"
+              : "bg-red-100 text-red-700")
+          }
+        >
+          {registered ? "Phone registered" : "Connecting…"}
+        </span>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {/* ---- left: auto-dialer + customer ---- */}
+        <div className="space-y-4">
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
+            {noCampaign ? (
+              <p className="text-sm text-amber-700">
+                No campaign assigned. Ask your admin or manager to assign you a
+                campaign — auto-dialing will start automatically once they do.
+              </p>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-slate-400">Campaign</p>
+                    <p className="font-semibold">{campaign?.name ?? "…"}</p>
+                  </div>
+                  {(campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio') ? (
+                    <span
+                      className={
+                        "rounded-full px-3 py-1 text-xs font-semibold " +
+                        (complete
+                          ? "bg-blue-100 text-blue-700"
+                          : autoRunning
+                            ? "bg-green-100 text-green-700"
+                            : "bg-slate-100 text-slate-600")
+                      }
+                    >
+                      {complete ? "Campaign complete" : autoRunning ? "Dialer running" : "Dialer stopped"}
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 capitalize">
+                      {campaign?.dialer_type ?? 'manual'}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-4 flex items-center justify-between">
+                  <span className="text-sm text-slate-500">
+                    Calls this session: <b>{sessionCalls}</b>
+                  </span>
+                  {(campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio') && (
+                    autoRunning ? (
+                      <button
+                        onClick={stopAuto}
+                        className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+                      >
+                        Stop
+                      </button>
+                    ) : (
+                      <button
+                        onClick={startAuto}
+                        disabled={!registered || !campaign}
+                        className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-40"
+                      >
+                        {complete ? "Restart" : "Start dialer"}
+                      </button>
+                    )
+                  )}
+                </div>
+                {(campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio') && (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Runs continuously. Use Stop before taking a break; it also stops when the campaign is finished or you log out.
+                  </p>
+                )}
+                {campaign?.dialer_type === 'manual' && (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Manual mode — use the dial pad below to call each contact.
+                  </p>
+                )}
+                {campaign?.dialer_type === 'inbound' && (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Inbound mode — waiting for incoming calls.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* customer details */}
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
+            <h2 className="mb-2 text-sm font-semibold text-slate-500">
+              Customer details
+            </h2>
+            {contact ? (
+              <div className="space-y-1 text-sm">
+                <p className="text-lg font-semibold">
+                  {contact.name ?? "Unknown contact"}
+                </p>
+                {contact.company && (
+                  <p className="text-slate-600">{contact.company}</p>
+                )}
+                <p className="font-mono text-slate-700">
+                  {contact.phone_number}
+                </p>
+                {contact.email && (
+                  <p className="text-slate-500">{contact.email}</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">
+                {autoRunning ? "Loading next contact…" : "No contact loaded."}
+              </p>
+            )}
+          </div>
+
+          {/* manual dial (ad-hoc) */}
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
+            <h2 className="mb-2 text-sm font-semibold text-slate-500">
+              Manual call
+            </h2>
+            <div className="flex gap-2">
+              <input
+                value={manualNumber}
+                onChange={(e) => setManualNumber(e.target.value)}
+                disabled={autoRunning || inCall}
+                placeholder="Phone number"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm disabled:bg-slate-50"
+              />
+              <button
+                onClick={manualCall}
+                disabled={
+                  autoRunning || inCall || !manualNumber.trim() || !registered
+                }
+                className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-40"
+              >
+                Call
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-slate-400">
+              Available when the auto-dialer is stopped.
+            </p>
+          </div>
+        </div>
+
+        {/* ---- right: live call + dialpad + script ---- */}
+        <div className="space-y-4">
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
+            <h2 className="mb-3 text-sm font-semibold text-slate-500">
+              Live call
+            </h2>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-lg font-semibold">
+                  {STATE_LABEL[callState]}
+                </p>
+                <p className="font-mono text-sm text-slate-500">
+                  {metaRef.current?.phoneNumber || manualNumber || "—"}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="font-mono text-2xl">{fmt(elapsed)}</p>
+                {callState === "in-call" && (
+                  <p className="flex items-center justify-end gap-1 text-xs text-red-600">
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-600" />
+                    Live
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={onHangup}
+              disabled={!inCall}
+              className="mt-3 w-full rounded-lg bg-red-600 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-40"
+            >
+              Hang up
+            </button>
+          </div>
+
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
+            <div className="grid grid-cols-3 gap-2">
+              {DIAL_KEYS.map((k) => (
+                <button
+                  key={k}
+                  onClick={() => pressKey(k)}
+                  className="rounded-lg border border-slate-200 bg-slate-50 py-3 text-lg font-medium hover:bg-indigo-50"
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              During a call the keypad sends DTMF tones.
+            </p>
+          </div>
+
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
+            <h2 className="mb-2 text-sm font-semibold text-slate-500">
+              Call script
+            </h2>
+            <p className="whitespace-pre-wrap text-sm text-slate-700">
+              {campaign?.script ?? "No script for this campaign."}
+            </p>
+          </div>
+        </div>
+      </div>
+      {/* ---- post-call wrap-up ---- */}
+      {postCall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 className="text-base font-semibold">Wrap up call</h2>
+            <p className="mt-0.5 text-sm text-slate-500">
+              {postCall.contactName ? postCall.contactName + " · " : ""}
+              {postCall.phoneNumber} · {fmt(postCall.durationSeconds)}
+            </p>
+
+            <label className="mt-4 block text-sm font-medium text-slate-700">
+              Call status
+            </label>
+            <select
+              value={pcDisposition}
+              onChange={(e) =>
+                setPcDisposition(e.target.value as CallDisposition)
+              }
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              {DISPOSITIONS.map((d) => (
+                <option key={d.value} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+
+            <label className="mt-3 block text-sm font-medium text-slate-700">
+              Notes
+            </label>
+            <textarea
+              value={pcNote}
+              onChange={(e) => setPcNote(e.target.value)}
+              rows={3}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              placeholder="What did you discuss?"
+            />
+
+            <label className="mt-3 block text-sm font-medium text-slate-700">
+              Tags
+            </label>
+            <input
+              value={pcTags}
+              onChange={(e) => setPcTags(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              placeholder="comma, separated, tags"
+            />
+
+            <label className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={pcSchedule}
+                onChange={(e) => setPcSchedule(e.target.checked)}
+              />
+              Schedule a follow-up call
+            </label>
+            {pcSchedule && (
+              <input
+                type="datetime-local"
+                value={pcFollowUpAt}
+                onChange={(e) => setPcFollowUpAt(e.target.value)}
+                className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            )}
+
+            <Button
+              onClick={savePostCall}
+              loading={saving}
+              className="mt-5 w-full"
+            >
+              {saving
+                ? "Saving…"
+                : autoRunning
+                  ? "Save & next call"
+                  : "Save call"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
