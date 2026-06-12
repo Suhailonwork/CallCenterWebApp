@@ -1,21 +1,21 @@
-import { authenticate, isError, ok, fail } from '@/lib/api';
-import { query, queryOne } from '@/lib/db';
+import { authenticate, isError, ok, fail } from "@/lib/api";
+import { query, queryOne } from "@/lib/db";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
 
 /** GET /api/admin/customers/[phone] — all calls for one phone number, across campaigns. */
 export async function GET(
   _req: Request,
   { params }: { params: { phone: string } },
 ) {
-  const u = await authenticate(['admin']);
+  const u = await authenticate(["admin"]);
   if (isError(u)) return u;
 
   const phone = decodeURIComponent(params.phone).trim();
-  if (!phone) return fail('Invalid phone number');
+  if (!phone) return fail("Invalid phone number");
 
-const info = await queryOne<any>(
-  `SELECT
+  const info = await queryOne<any>(
+    `SELECT
           MAX(contact_name) AS contact_name,
           COUNT(*) AS total_calls,
           SUM(status IN ('connected','completed')) AS connected,
@@ -23,15 +23,15 @@ const info = await queryOne<any>(
           COALESCE(SUM(duration_seconds), 0) AS talk_seconds
      FROM calls
     WHERE phone_number = ?`,
-  [phone],
-);
+    [phone],
+  );
 
-if (info) {
-  info.phone_number = phone;
-}
+  if (info) {
+    info.phone_number = phone;
+  }
 
   if (!info || Number(info.total_calls) === 0) {
-    return fail('No calls found for this number', 404);
+    return fail("No calls found for this number", 404);
   }
 
   const byAgent = await query<any>(
@@ -52,10 +52,13 @@ if (info) {
             c.duration_seconds, c.recording_url,
             DATE_FORMAT(c.started_at, '%Y-%m-%d %H:%i:%s') AS started_at,
             u.name AS agent_name,
-            cmp.name AS campaign_name
+            cmp.name AS campaign_name,
+            n.note AS note,
+            n.tags AS dispo
        FROM calls c
        LEFT JOIN users u       ON u.id = c.employee_id
        LEFT JOIN campaigns cmp ON cmp.id = c.campaign_id
+       LEFT JOIN call_notes n  ON n.call_id = c.id
       WHERE c.phone_number = ?
       ORDER BY c.id DESC
       LIMIT 500`,

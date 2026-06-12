@@ -48,15 +48,23 @@ export async function GET(
   );
 
   const calls = await query<any>(
-    `SELECT c.id, c.phone_number, c.contact_name, c.direction, c.status,
-            c.duration_seconds, c.recording_url,
-            DATE_FORMAT(c.started_at, '%Y-%m-%d %H:%i:%s') AS started_at,
-            u.name AS employee_name
-       FROM calls c
-       LEFT JOIN users u ON u.id = c.employee_id
-      WHERE c.campaign_id = ?
-      ORDER BY c.id DESC
-      LIMIT 500`,
+    `SELECT c.id,
+       c.phone_number,
+       c.contact_name,
+       c.direction,
+       c.status,
+       c.duration_seconds,
+       c.recording_url,
+       DATE_FORMAT(c.started_at, '%Y-%m-%d %H:%i:%s') AS started_at,
+       u.name AS employee_name,
+       n.tags AS dispo,
+       n.note AS note
+FROM calls c
+LEFT JOIN users u ON u.id = c.employee_id
+LEFT JOIN call_notes n ON n.call_id = c.id
+WHERE c.campaign_id = ?
+ORDER BY c.id DESC
+LIMIT 500`,
     [id],
   );
 

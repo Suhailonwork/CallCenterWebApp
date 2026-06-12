@@ -10,10 +10,10 @@ import type { Campaign, Contact, SipConfig, CallDisposition } from "@/types";
 const DIAL_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 
 const DIALER_LABELS: Record<string, string> = {
-  predictive: 'Predictive Dialer',
-  manual:     'Manual Dialer',
-  inbound:    'Inbound Dialer',
-  ratio:      'Ratio Dialer',
+  predictive: "Predictive Dialer",
+  manual: "Manual Dialer",
+  inbound: "Inbound Dialer",
+  ratio: "Ratio Dialer",
 };
 
 const DISPOSITIONS: { value: CallDisposition; label: string }[] = [
@@ -24,6 +24,73 @@ const DISPOSITIONS: { value: CallDisposition; label: string }[] = [
   { value: "wrong_number", label: "Wrong Number" },
   { value: "failed", label: "Failed" },
 ];
+
+// ---- DISPO categories aur unke reason sub-options ----
+// "$" se shuru reason = payment fields (amount/date/mode) zaroori
+const DISPO_OPTIONS: Record<string, string[]> = {
+  PAID: ["Full Paid", "Settlement Paid", "Partial Paid"],
+  PC: [
+    "On the way (Branch)",
+    "On the way (Bank)",
+    "Customer doing online Payment",
+  ],
+  PTP: ["$Customer ready to pay"],
+  CBPTP: ["$Future PTP"],
+  SETT: ["$Customer ready to pay settlement"],
+  BPTP: [
+    "Excuse - asking days for payment",
+    "Emergency Reason / Death / Accident",
+  ],
+  CB: [
+    "Customer in Emergency",
+    "Call back later",
+    "Out of station",
+    "Other",
+    "Statement verification",
+  ],
+  FI: [
+    "PFI-Permanent - Unemployed / Out of job",
+    "SFI-Short Term - Business Issue",
+    "Vehicle Viability / EMI Affordability",
+  ],
+  NFI: [
+    "CUACC-Customer Met with Accident",
+    "VEHAC-Vehicle Met with Accident",
+    "MEDIS-Medical Issue",
+    "FMEXP-Death of Family Member",
+  ],
+  SI: [
+    "NORC-RC Copy not Received",
+    "TISSU-Technical Issue in Vehicle",
+    "EMIDP-EMI or DP Issue",
+  ],
+  TNC: [
+    "Ringing",
+    "Not Reachable",
+    "Switch off",
+    "Number busy",
+    "Beep Silence",
+    "No voice / Voice issue",
+  ],
+  SKIP: [
+    "MIGR-Customer Migrated / Shift",
+    "CUNA-Not Available at visit place",
+    "FRAUD-Fraud Case",
+  ],
+  LM: ["Left Message"],
+  LPR: ["Language Problem"],
+  LN: ["Legal Notice"],
+  PTV: ["Pick the Vehicle"],
+  WN: ["Wrong Number"],
+  ID: ["Intentional Defaulter"],
+  VPC: ["Vehicle under police custody"],
+  VDLR: ["Vehicle with dealer"],
+  CD: ["Call drop"],
+  Repo: ["Vehicle Repo"],
+  Account: ["Account Close"],
+};
+
+const PAY_MODES = ["Cash", "Bank Transfer", "Online", "UPI", "Cheque"];
 
 const STATE_LABEL: Record<CallState, string> = {
   idle: "Idle",
@@ -84,7 +151,9 @@ export function Dialer() {
   const [contact, setContact] = useState<Contact | null>(null);
   const [autoRunning, setAutoRunning] = useState(false);
   const [complete, setComplete] = useState(false);
-  const [gatewayReachable, setGatewayReachable] = useState<boolean | null>(null);
+  const [gatewayReachable, setGatewayReachable] = useState<boolean | null>(
+    null,
+  );
   const [gatewayWarning, setGatewayWarning] = useState<string | null>(null);
   const [manualNumber, setManualNumber] = useState("");
   const [elapsed, setElapsed] = useState(0);
@@ -95,7 +164,11 @@ export function Dialer() {
   const [pcDisposition, setPcDisposition] =
     useState<CallDisposition>("connected");
   const [pcNote, setPcNote] = useState("");
-  const [pcTags, setPcTags] = useState("");
+  const [pcDispo, setPcDispo] = useState("");
+  const [pcReason, setPcReason] = useState("");
+  const [pcAmt, setPcAmt] = useState("");
+  const [pcPayDate, setPcPayDate] = useState("");
+  const [pcMode, setPcMode] = useState("");
   const [pcSchedule, setPcSchedule] = useState(false);
   const [pcFollowUpAt, setPcFollowUpAt] = useState("");
   const [saving, setSaving] = useState(false);
@@ -112,6 +185,7 @@ export function Dialer() {
   const autoRunningRef = useRef(false);
   autoRunningRef.current = autoRunning;
   const autoStartedRef = useRef(false);
+  const reasonNeedsPayment = pcReason.startsWith("$");
 
   const handleCallState = useCallback((s: CallState) => {
     setCallState(s);
@@ -224,7 +298,11 @@ export function Dialer() {
     if (postCall) {
       setPcDisposition(postCall.defaultDisposition);
       setPcNote("");
-      setPcTags("");
+      setPcDispo("");
+      setPcReason("");
+      setPcAmt("");
+      setPcPayDate("");
+      setPcMode("");
       setPcSchedule(false);
       setPcFollowUpAt("");
     }
@@ -260,7 +338,11 @@ export function Dialer() {
     setElapsed(0);
     // Pick the first active gateway with an asterisk_endpoint for this campaign
     const gw = campaignRef.current?.gateways?.find((g) => g.asterisk_endpoint);
-    phoneRef.current.call(target, s.sipServer, gw?.asterisk_endpoint ?? undefined);
+    phoneRef.current.call(
+      target,
+      s.sipServer,
+      gw?.asterisk_endpoint ?? undefined,
+    );
     return true;
   }
 
@@ -309,7 +391,9 @@ export function Dialer() {
       .then((r) => r.json())
       .then((data) => {
         setGatewayReachable(data.reachable);
-        setGatewayWarning(data.reachable ? null : (data.reason ?? 'Gateway offline'));
+        setGatewayWarning(
+          data.reachable ? null : (data.reason ?? "Gateway offline"),
+        );
       })
       .catch(() => {
         setGatewayReachable(null);
@@ -320,7 +404,9 @@ export function Dialer() {
   // ---- auto-start the dialer once registered + a campaign is loaded ----
   // Only auto-start for predictive and ratio dialers; manual/inbound require agent action.
   useEffect(() => {
-    const isAutoDialer = campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio';
+    const isAutoDialer =
+      campaign?.dialer_type === "predictive" ||
+      campaign?.dialer_type === "ratio";
     if (registered && campaign && isAutoDialer && !autoStartedRef.current) {
       autoStartedRef.current = true;
       autoRunningRef.current = true;
@@ -360,16 +446,55 @@ export function Dialer() {
     }
   }
 
-function manualCall() {
+  function manualCall() {
     if (manualNumber.trim()) {
-      startCall(manualNumber.trim(), null, campaignRef.current?.id ?? null, null);
+      startCall(
+        manualNumber.trim(),
+        null,
+        campaignRef.current?.id ?? null,
+        null,
+      );
     }
   }
 
   async function savePostCall() {
     if (!postCall) return;
+
+    // PTP/SETT/CBPTP (payment wale) mein amount, date, mode teeno zaroori
+    if (reasonNeedsPayment) {
+      if (!pcAmt) {
+        toast.warning("Amount zaroori hai");
+        return;
+      }
+      if (!pcPayDate) {
+        toast.warning("Payment date zaroori hai");
+        return;
+      }
+      if (!pcMode) {
+        toast.warning("Payment mode zaroori hai");
+        return;
+      }
+    }
+
     setSaving(true);
     try {
+      const reasonText = pcReason.startsWith("$")
+        ? pcReason.slice(1)
+        : pcReason;
+      const parts: string[] = [];
+      if (pcNote.trim()) parts.push(pcNote.trim());
+      if (pcDispo && reasonText) {
+        let dispoLine = `[${pcDispo} - ${reasonText}`;
+        if (reasonNeedsPayment) {
+          dispoLine += ` | amt:${pcAmt || "?"} date:${pcPayDate || "?"} mode:${pcMode || "?"}`;
+        }
+        dispoLine += `]`;
+        parts.push(dispoLine);
+      } else if (pcDispo) {
+        parts.push(`[${pcDispo}]`);
+      }
+      const composedNote = parts.length ? parts.join("\n") : null;
+
       const res = await fetch("/api/employee/calls", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -380,8 +505,8 @@ function manualCall() {
           csvDataId: postCall.csvDataId,
           status: pcDisposition,
           durationSeconds: postCall.durationSeconds,
-          note: pcNote || null,
-          tags: pcTags || null,
+          note: composedNote,
+          tags: pcDispo || null,
           followUpAt: pcSchedule && pcFollowUpAt ? pcFollowUpAt : null,
         }),
       });
@@ -415,7 +540,9 @@ function manualCall() {
       )}
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">
-          {campaign ? (DIALER_LABELS[campaign.dialer_type] ?? 'Dialer') : 'Dialer'}
+          {campaign
+            ? (DIALER_LABELS[campaign.dialer_type] ?? "Dialer")
+            : "Dialer"}
         </h1>
         <span
           className={
@@ -441,10 +568,13 @@ function manualCall() {
               <>
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-xs font-medium text-slate-400">Campaign</p>
+                    <p className="text-xs font-medium text-slate-400">
+                      Campaign
+                    </p>
                     <p className="font-semibold">{campaign?.name ?? "…"}</p>
                   </div>
-                  {(campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio') ? (
+                  {campaign?.dialer_type === "predictive" ||
+                  campaign?.dialer_type === "ratio" ? (
                     <span
                       className={
                         "rounded-full px-3 py-1 text-xs font-semibold " +
@@ -455,11 +585,15 @@ function manualCall() {
                             : "bg-slate-100 text-slate-600")
                       }
                     >
-                      {complete ? "Campaign complete" : autoRunning ? "Dialer running" : "Dialer stopped"}
+                      {complete
+                        ? "Campaign complete"
+                        : autoRunning
+                          ? "Dialer running"
+                          : "Dialer stopped"}
                     </span>
                   ) : (
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 capitalize">
-                      {campaign?.dialer_type ?? 'manual'}
+                      {campaign?.dialer_type ?? "manual"}
                     </span>
                   )}
                 </div>
@@ -467,8 +601,9 @@ function manualCall() {
                   <span className="text-sm text-slate-500">
                     Calls this session: <b>{sessionCalls}</b>
                   </span>
-                  {(campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio') && (
-                    autoRunning ? (
+                  {(campaign?.dialer_type === "predictive" ||
+                    campaign?.dialer_type === "ratio") &&
+                    (autoRunning ? (
                       <button
                         onClick={stopAuto}
                         className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
@@ -483,20 +618,21 @@ function manualCall() {
                       >
                         {complete ? "Restart" : "Start dialer"}
                       </button>
-                    )
-                  )}
+                    ))}
                 </div>
-                {(campaign?.dialer_type === 'predictive' || campaign?.dialer_type === 'ratio') && (
+                {(campaign?.dialer_type === "predictive" ||
+                  campaign?.dialer_type === "ratio") && (
                   <p className="mt-2 text-xs text-slate-400">
-                    Runs continuously. Use Stop before taking a break; it also stops when the campaign is finished or you log out.
+                    Runs continuously. Use Stop before taking a break; it also
+                    stops when the campaign is finished or you log out.
                   </p>
                 )}
-                {campaign?.dialer_type === 'manual' && (
+                {campaign?.dialer_type === "manual" && (
                   <p className="mt-2 text-xs text-slate-400">
                     Manual mode — use the dial pad below to call each contact.
                   </p>
                 )}
-                {campaign?.dialer_type === 'inbound' && (
+                {campaign?.dialer_type === "inbound" && (
                   <p className="mt-2 text-xs text-slate-400">
                     Inbound mode — waiting for incoming calls.
                   </p>
@@ -661,14 +797,97 @@ function manualCall() {
             />
 
             <label className="mt-3 block text-sm font-medium text-slate-700">
-              Tags
+              DISPO
             </label>
-            <input
-              value={pcTags}
-              onChange={(e) => setPcTags(e.target.value)}
+            <select
+              value={pcDispo}
+              onChange={(e) => {
+                setPcDispo(e.target.value);
+                setPcReason("");
+                setPcAmt("");
+                setPcPayDate("");
+                setPcMode("");
+              }}
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              placeholder="comma, separated, tags"
-            />
+            >
+              <option value="">— select disposition —</option>
+              {Object.keys(DISPO_OPTIONS).map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+
+            {pcDispo && (
+              <>
+                <label className="mt-3 block text-sm font-medium text-slate-700">
+                  Reason
+                </label>
+                <select
+                  value={pcReason}
+                  onChange={(e) => setPcReason(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  <option value="">— select reason —</option>
+                  {DISPO_OPTIONS[pcDispo].map((r) => (
+                    <option key={r} value={r}>
+                      {r.startsWith("$") ? r.slice(1) : r}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            {reasonNeedsPayment && (
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">
+                    Amount
+                  </label>
+                  <input
+                    value={pcAmt}
+                    onChange={(e) => setPcAmt(e.target.value)}
+                    inputMode="numeric"
+                    placeholder="₹"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={pcPayDate}
+                    onChange={(e) => {
+                      setPcPayDate(e.target.value);
+                      if (e.target.value) {
+                        setPcSchedule(true);
+                        setPcFollowUpAt(e.target.value + "T10:00");
+                      }
+                    }}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">
+                    Mode
+                  </label>
+                  <select
+                    value={pcMode}
+                    onChange={(e) => setPcMode(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                  >
+                    <option value="">—</option>
+                    {PAY_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
 
             <label className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-700">
               <input

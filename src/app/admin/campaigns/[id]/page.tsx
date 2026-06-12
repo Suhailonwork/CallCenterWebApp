@@ -185,6 +185,7 @@ export default function CampaignDetailPage() {
                 <th className="px-3 py-2">Phone</th>
                 <th className="px-3 py-2">Agent</th>
                 <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">DISPO</th>
                 <th className="px-3 py-2">Duration</th>
                 <th className="px-3 py-2">Time</th>
                 <th className="px-3 py-2">Recording</th>
@@ -215,6 +216,34 @@ export default function CampaignDetailPage() {
                       {c.status}
                     </span>
                   </td>
+                  <td className="px-3 py-2">
+  {c.dispo ? (
+    <div className="group relative inline-block">
+      <span className="inline-block cursor-help rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
+        {c.dispo}
+      </span>
+
+      {(() => {
+        const raw = (c.note || "").trim();
+        if (!raw) return null;
+
+        const clean = raw
+          .replace(/\[[^\]]*\]/g, (m: string) =>
+            m.slice(1, -1).replace(/^[A-Za-z]+\s*-\s*/, "").trim()
+          )
+          .trim();
+
+        return (
+          <div className="pointer-events-none absolute left-0 top-full z-50 mt-2 hidden w-80 rounded-lg border border-slate-200 bg-white p-3 text-xs leading-relaxed text-slate-700 shadow-xl group-hover:block">
+            {clean}
+          </div>
+        );
+      })()}
+    </div>
+  ) : (
+    <span className="text-slate-400">—</span>
+  )}
+</td>
                   <td className="px-3 py-2">
                     {fmtTime(n(c.duration_seconds))}
                   </td>
