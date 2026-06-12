@@ -97,19 +97,16 @@ export async function tlOwnsCampaign(tlId: number, campaignId: number): Promise<
 }
 
 /**
- * May this agent work the campaign? True when the agent is directly
- * assigned (legacy campaign_assignments) OR the campaign belongs to one
- * of the agent's groups.
+ * May this agent work the campaign? True only when the campaign belongs
+ * to one of the agent's groups — agents are assigned through groups,
+ * not individually.
  */
 export async function agentCanAccessCampaign(agentId: number, campaignId: number): Promise<boolean> {
   const row = await queryOne(
     `SELECT c.id FROM campaigns c
-      WHERE c.id = ?
-        AND (EXISTS (SELECT 1 FROM campaign_assignments ca
-                      WHERE ca.campaign_id = c.id AND ca.employee_id = ?)
-          OR EXISTS (SELECT 1 FROM group_agents ga
-                      WHERE ga.group_id = c.group_id AND ga.agent_id = ?))`,
-    [campaignId, agentId, agentId],
+       JOIN group_agents ga ON ga.group_id = c.group_id AND ga.agent_id = ?
+      WHERE c.id = ?`,
+    [agentId, campaignId],
   );
   return !!row;
 }

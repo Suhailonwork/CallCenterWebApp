@@ -3,7 +3,6 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import type { CampaignRow, DialerType } from "@/types";
-import { CampaignAssign } from "./CampaignAssign";
 import type { GsmGateway } from "./GatewayManager";
 
 const DIALER_OPTIONS: {
@@ -84,10 +83,6 @@ export function CampaignManager({
   const [selectedGatewayIds, setSelectedGatewayIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<number | null>(null);
-  const [assignFor, setAssignFor] = useState<{
-    id: number;
-    name: string;
-  } | null>(null);
   // Edit-gateway modal for an existing campaign
   const [editGwFor, setEditGwFor] = useState<CampaignWithGateways | null>(null);
   const [editGwIds, setEditGwIds] = useState<number[]>([]);
@@ -545,12 +540,6 @@ export function CampaignManager({
                       />
                     </label>
                     <button
-                      onClick={() => setAssignFor({ id: c.id, name: c.name })}
-                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium hover:bg-slate-50"
-                    >
-                      Assign agents
-                    </button>
-                    <button
                       onClick={() => {
                         setEditGwFor(c);
                         setEditGwIds((c.gateways ?? []).map((g) => g.id));
@@ -677,13 +666,6 @@ export function CampaignManager({
         </div>
       )}
 
-      {assignFor && (
-        <CampaignAssign
-          campaignId={assignFor.id}
-          campaignName={assignFor.name}
-          onClose={() => setAssignFor(null)}
-        />
-      )}
     </div>
   );
 }

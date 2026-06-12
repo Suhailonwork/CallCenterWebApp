@@ -30,6 +30,7 @@ export async function GET(
     [id],
   );
 
+  // Agents come from the campaign's group (groups own the agents now).
   const employees = await query<any>(
     `SELECT u.id, u.name, u.role,
             COALESCE(e.status, 'offline') AS status,
@@ -37,11 +38,12 @@ export async function GET(
             SUM(c.status IN ('connected','completed'))   AS connected,
             SUM(c.status = 'completed')                  AS success,
             COALESCE(SUM(c.duration_seconds), 0)         AS talk_seconds
-       FROM campaign_assignments ca
-       JOIN users u      ON u.id = ca.employee_id
+       FROM campaigns cmp
+       JOIN group_agents ga ON ga.group_id = cmp.group_id
+       JOIN users u      ON u.id = ga.agent_id
        LEFT JOIN employees e ON e.user_id = u.id
-       LEFT JOIN calls c ON c.employee_id = u.id AND c.campaign_id = ca.campaign_id
-      WHERE ca.campaign_id = ?
+       LEFT JOIN calls c ON c.employee_id = u.id AND c.campaign_id = cmp.id
+      WHERE cmp.id = ?
       GROUP BY u.id, u.name, u.role, e.status
       ORDER BY u.name`,
     [id],

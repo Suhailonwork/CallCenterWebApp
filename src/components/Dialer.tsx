@@ -577,8 +577,9 @@ export function Dialer() {
           <div className="rounded-2xl bg-white p-5 shadow-sm">
             {noCampaign ? (
               <p className="text-sm text-amber-700">
-                No campaign assigned. Ask your admin or manager to assign you a
-                campaign — auto-dialing will start automatically once they do.
+                No campaign available. Ask your admin or team lead to add you
+                to a group with an active campaign — it will appear here
+                automatically once they do.
               </p>
             ) : (
               <>
