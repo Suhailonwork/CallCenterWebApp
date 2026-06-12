@@ -53,7 +53,7 @@ export default function CustomerDetailPage() {
   const n = (v: any) => Number(v ?? 0);
 
   return (
-    <div className="space-y-6 p-1">
+    <div className="space-y-6 p-1 overflow-x-hidden">
       <button
         onClick={() => router.back()}
         className="text-sm text-indigo-600 hover:underline"
@@ -109,7 +109,7 @@ export default function CustomerDetailPage() {
         <h2 className="mb-3 text-sm font-semibold text-slate-700">
           Call history ({calls.length})
         </h2>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
@@ -142,64 +142,66 @@ export default function CustomerDetailPage() {
                       {c.status}
                     </span>
                   </td>
-                 <td className="px-3 py-2">
-  {c.dispo ? (
-    <div className="group relative inline-block">
-      <span className="inline-block cursor-help rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
-        {c.dispo}
-      </span>
+                  <td className="px-3 py-2">
+                    {c.dispo ? (
+                      <div className="group relative inline-block">
+                        <span className="inline-block cursor-help rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
+                          {c.dispo}
+                        </span>
 
-      {(() => {
-        const raw = (c.note || "").trim();
-        const reasonMatch = raw.match(/\[.*?-\s*(.*?)\]/);
-        const dispoReason = reasonMatch?.[1] || "";
+                        {(() => {
+                          const raw = (c.note || "").trim();
+                          const reasonMatch = raw.match(/\[.*?-\s*(.*?)\]/);
+                          const dispoReason = reasonMatch?.[1] || "";
 
-        if (!dispoReason) return null;
+                          if (!dispoReason) return null;
 
-        return (
-          <div className="pointer-events-none absolute left-0 top-full z-50 mt-2 hidden w-72 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-xl group-hover:block">
-            <div className="mb-1 font-semibold text-slate-500">
-              Disposition Reason
-            </div>
-            {dispoReason}
-          </div>
-        );
-      })()}
-    </div>
-  ) : (
-    <span className="text-slate-400">—</span>
-  )}
-</td>
+                          return (
+                            <div className="pointer-events-none absolute left-0 top-full z-50 mt-2 hidden w-72 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-xl group-hover:block">
+                              <div className="mb-1 font-semibold text-slate-500">
+                                Disposition Reason
+                              </div>
+                              {dispoReason}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </td>
 
-<td className="px-3 py-2">
-  {c.note ? (
-    <div className="group relative inline-block">
-      <span className="cursor-help text-indigo-600 hover:underline">
-        View
-      </span>
+                  <td className="px-3 py-2">
+                    {c.note ? (
+                      <div className="group relative inline-block">
+                        <span className="cursor-help text-indigo-600 hover:underline">
+                          View
+                        </span>
 
-      {(() => {
-        const raw = (c.note || "").trim();
+                        {(() => {
+                          const raw = (c.note || "").trim();
 
-        const notesOnly = raw
-          .replace(/\[[^\]]+\]/g, "")
-          .trim();
+                          const notesOnly = raw
+                            .replace(/\[[^\]]+\]/g, "")
+                            .trim();
 
-        return (
-          <div className="absolute left-0 top-full z-50 mt-2 hidden w-96 rounded-lg border border-slate-200 bg-white p-3 shadow-xl group-hover:block">
-            <div className="mb-1 font-semibold text-slate-500">Notes</div>
+                          return (
+                            <div className="absolute left-0 top-full z-50 mt-2 hidden w-96 rounded-lg border border-slate-200 bg-white p-3 shadow-xl group-hover:block">
+                              <div className="mb-1 font-semibold text-slate-500">
+                                Notes
+                              </div>
 
-            <p className="whitespace-pre-wrap break-words text-xs">
-              {notesOnly || "No notes"}
-            </p>
-          </div>
-        );
-      })()}
-    </div>
-  ) : (
-    <span className="text-slate-400">—</span>
-  )}
-</td>
+                              <p className="whitespace-pre-wrap break-words text-xs">
+                                {notesOnly || "No notes"}
+                              </p>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2">
                     {fmtTime(n(c.duration_seconds))}
                   </td>
@@ -211,7 +213,6 @@ export default function CustomerDetailPage() {
                           src={`/api/recordings/${encodeURIComponent(c.recording_url)}`}
                           className="h-8"
                         />
-                       
                       </div>
                     ) : (
                       <span className="text-slate-400">—</span>
