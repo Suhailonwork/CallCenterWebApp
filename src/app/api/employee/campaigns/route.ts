@@ -5,20 +5,25 @@ export const runtime = 'nodejs';
 
 /**
  * GET /api/employee/campaigns
- * Only the active campaigns this agent has been assigned to by an
- * admin or manager. Agents cannot choose campaigns themselves.
+ * Active campaigns this agent may work: either directly assigned by an
+ * admin/manager (campaign_assignments) or belonging to one of the agent's
+ * groups (group_agents -> campaigns.group_id). Agents cannot reach
+ * campaigns outside their assignments / groups.
  */
 export async function GET() {
   const user = await authenticate(['employee']);
   if (isError(user)) return user;
 
   const campaigns = await query<any>(
-    `SELECT c.id, c.name, c.description, c.script, c.status, c.dialer_type
+    `SELECT DISTINCT c.id, c.name, c.description, c.script, c.status, c.dialer_type
        FROM campaigns c
-       JOIN campaign_assignments ca ON ca.campaign_id = c.id
-      WHERE ca.employee_id = ? AND c.status = 'active'
+      WHERE c.status = 'active'
+        AND (EXISTS (SELECT 1 FROM campaign_assignments ca
+                      WHERE ca.campaign_id = c.id AND ca.employee_id = ?)
+          OR EXISTS (SELECT 1 FROM group_agents ga
+                      WHERE ga.group_id = c.group_id AND ga.agent_id = ?))
       ORDER BY c.name ASC`,
-    [user.id],
+    [user.id, user.id],
   );
 
   if (campaigns.length === 0) return ok({ campaigns: [] });

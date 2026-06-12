@@ -9,7 +9,7 @@ export const runtime = 'nodejs';
  * Returns reachability status for all gateways by querying Asterisk ARI.
  */
 export async function GET() {
-  const u = await authenticate(['admin', 'manager']);
+  const u = await authenticate(['admin', 'manager', 'tl']);
   if (isError(u)) return u;
 
   const ariUrl  = process.env.ARI_URL  ?? 'http://localhost:8088';

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { authenticate, isError, ok, fail } from "@/lib/api";
 import { pool, query } from "@/lib/db";
 import { broadcastChange } from "@/lib/realtime";
+import { agentCanAccessCampaign } from "@/lib/groups";
 
 export const runtime = "nodejs";
 
@@ -33,6 +34,11 @@ export async function POST(req: Request) {
   if (!parsed.success) return fail("Invalid call data");
   const d = parsed.data;
   const duration = d.durationSeconds; // zod-validated integer - safe to inline
+
+  // RBAC: a call may only be logged against a campaign the agent can work.
+  if (d.campaignId != null && !(await agentCanAccessCampaign(user.id, d.campaignId))) {
+    return fail("You are not assigned to this campaign", 403);
+  }
 
   const conn = await pool.getConnection();
   try {

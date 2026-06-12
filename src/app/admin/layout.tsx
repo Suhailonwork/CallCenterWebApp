@@ -18,6 +18,7 @@ export default async function AdminLayout({
       nav={[
         { href: '/admin/dashboard', label: 'Dashboard' },
         { href: '/admin/users', label: 'Users & Teams' },
+        { href: '/admin/groups', label: 'Groups' },
         { href: '/admin/campaigns', label: 'Campaigns' },
         { href: '/admin/gateways', label: 'GSM Gateways' },
         { href: '/admin/reports', label: 'Reports' },

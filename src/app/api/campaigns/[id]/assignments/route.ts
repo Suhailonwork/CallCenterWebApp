@@ -3,15 +3,20 @@ import { authenticate, isError, ok, fail, type AuthedUser } from "@/lib/api";
 import { query } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { employeesUnderManager } from "@/lib/org";
+import { agentsInTLGroups, tlOwnsCampaign } from "@/lib/groups";
 
 export const runtime = "nodejs";
 
-/** Employees the caller is allowed to assign (admin: all, manager: their team). */
+/** Employees the caller is allowed to assign (admin: all, manager: their team, tl: their group agents). */
 async function assignableEmployees(user: AuthedUser) {
   if (user.role === "admin") {
     return query<{ id: number; name: string }>(
       "SELECT id, name FROM users WHERE role = 'employee' AND is_active = 1 ORDER BY name",
     );
+  }
+  if (user.role === "tl") {
+    const agents = await agentsInTLGroups(user.id);
+    return agents.map((e) => ({ id: e.id, name: e.name }));
   }
   const team = await employeesUnderManager(user.id);
   return team.map((e) => ({ id: e.id, name: e.name }));
@@ -22,11 +27,16 @@ export async function GET(
   req: Request,
   { params }: { params: { id: string } },
 ) {
-  const u = await authenticate(["admin", "manager"]);
+  const u = await authenticate(["admin", "manager", "tl"]);
   if (isError(u)) return u;
 
   const id = Number(params.id);
   if (!Number.isInteger(id)) return fail("Invalid campaign id");
+
+  // RBAC: a TL may only look at campaigns inside their own groups.
+  if (u.role === "tl" && !(await tlOwnsCampaign(u.id, id))) {
+    return fail("Campaign is not in your group", 403);
+  }
 
   const employees = await assignableEmployees(u);
   const rows = await query<{ employee_id: number }>(
@@ -45,11 +55,16 @@ export async function PUT(
   req: Request,
   { params }: { params: { id: string } },
 ) {
-  const u = await authenticate(["admin", "manager"]);
+  const u = await authenticate(["admin", "manager", "tl"]);
   if (isError(u)) return u;
 
   const id = Number(params.id);
   if (!Number.isInteger(id)) return fail("Invalid campaign id");
+
+  // RBAC: a TL may only change assignments for campaigns inside their groups.
+  if (u.role === "tl" && !(await tlOwnsCampaign(u.id, id))) {
+    return fail("Campaign is not in your group", 403);
+  }
 
   const parsed = putSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return fail("Invalid assignment data");

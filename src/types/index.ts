@@ -141,6 +141,8 @@ export interface CampaignRow {
   created_at: string;
   total_contacts: number;
   called_contacts: number;
+  group_id?: number | null;
+  group_name?: string | null;
 }
 
 export interface CallReportRow {
@@ -169,4 +171,21 @@ export interface AuditRow {
 export interface AppSetting {
   key: string;
   value: string;
+}
+
+// ---- Groups module (group-based campaign management) ----
+
+export interface GroupMember {
+  id: number;
+  name: string;
+}
+
+export interface GroupRow {
+  id: number;
+  name: string;
+  description: string | null;
+  created_at: string;
+  tls: GroupMember[];
+  agents: GroupMember[];
+  campaign_count: number;
 }

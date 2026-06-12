@@ -46,9 +46,31 @@ const STATUS_STYLE: Record<string, string> = {
 
 type CampaignWithGateways = CampaignRow & { gateways?: GsmGateway[] };
 
-export function CampaignManager() {
+interface GroupOption {
+  id: number;
+  name: string;
+}
+
+/**
+ * Campaign console, shared by Admin and TL.
+ *   - Admin (default): apiBase="/api/admin", consoleBase="/admin", group optional.
+ *   - TL: apiBase="/api/tl", consoleBase="/tl" — the TL API only returns/accepts
+ *     campaigns in the TL's groups, and a group is required when creating.
+ * Gateways are always read from the admin endpoints (TLs have read access).
+ */
+export function CampaignManager({
+  apiBase = "/api/admin",
+  consoleBase = "/admin",
+  requireGroup = false,
+}: {
+  apiBase?: string;
+  consoleBase?: string;
+  requireGroup?: boolean;
+} = {}) {
   const [campaigns, setCampaigns] = useState<CampaignWithGateways[]>([]);
   const [allGateways, setAllGateways] = useState<GsmGateway[]>([]);
+  const [groupOptions, setGroupOptions] = useState<GroupOption[]>([]);
+  const [groupId, setGroupId] = useState<number | "">("");
   const [gwStatus, setGwStatus] = useState<
     Record<number, { reachable: boolean; state: string }>
   >({});
@@ -73,18 +95,21 @@ export function CampaignManager() {
   async function load() {
     setLoading(true);
     try {
-      const [campRes, gwRes, statusRes] = await Promise.all([
-        fetch("/api/admin/campaigns"),
+      const [campRes, gwRes, statusRes, grpRes] = await Promise.all([
+        fetch(`${apiBase}/campaigns`),
         fetch("/api/admin/gateways"),
         fetch("/api/admin/gateways/status"),
+        fetch(`${apiBase}/groups`),
       ]);
       const campData = await campRes.json();
       const gwData = await gwRes.json();
       const statusData = await statusRes.json();
+      const grpData = await grpRes.json().catch(() => ({}));
       if (campRes.ok) setCampaigns(campData.campaigns);
       else toast.error(campData.error ?? "Failed to load campaigns");
       if (gwRes.ok) setAllGateways(gwData.gateways);
       if (statusRes.ok) setGwStatus(statusData.status ?? {});
+      if (grpRes.ok) setGroupOptions(grpData.groups ?? []);
     } finally {
       setLoading(false);
     }
@@ -107,9 +132,13 @@ export function CampaignManager() {
       toast.warning("Campaign name is required");
       return;
     }
+    if (requireGroup && groupId === "") {
+      toast.warning("Select the group this campaign belongs to");
+      return;
+    }
     setSaving(true);
     try {
-      const res = await fetch("/api/admin/campaigns", {
+      const res = await fetch(`${apiBase}/campaigns`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -119,6 +148,7 @@ export function CampaignManager() {
           dialer_type: dialerType,
           gatewayIds: selectedGatewayIds,
           recording_enabled: recordingEnabled,
+          group_id: groupId === "" ? null : groupId,
         }),
       });
       const data = await res.json();
@@ -137,6 +167,7 @@ export function CampaignManager() {
       setDialerType("manual");
       setSelectedGatewayIds([]);
       setRecordingEnabled(false);
+      setGroupId("");
       setShowForm(false);
       load();
     } finally {
@@ -146,7 +177,7 @@ export function CampaignManager() {
 
   async function updateCampaignGateways() {
     if (!editGwFor) return;
-    const res = await fetch(`/api/admin/campaigns/${editGwFor.id}`, {
+    const res = await fetch(`${apiBase}/campaigns/${editGwFor.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -165,7 +196,7 @@ export function CampaignManager() {
   }
 
   async function setStatus(id: number, status: string) {
-    const res = await fetch(`/api/admin/campaigns/${id}`, {
+    const res = await fetch(`${apiBase}/campaigns/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
@@ -183,7 +214,7 @@ export function CampaignManager() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`/api/admin/campaigns/${id}/contacts`, {
+      const res = await fetch(`${apiBase}/campaigns/${id}/contacts`, {
         method: "POST",
         body: fd,
       });
@@ -245,6 +276,39 @@ export function CampaignManager() {
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
           </div>
+
+          {/* ── Group ownership ── */}
+          {(groupOptions.length > 0 || requireGroup) && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Group
+                {!requireGroup && (
+                  <span className="ml-1 text-xs text-slate-400">(optional)</span>
+                )}
+              </label>
+              <select
+                value={groupId}
+                onChange={(e) =>
+                  setGroupId(e.target.value === "" ? "" : Number(e.target.value))
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              >
+                <option value="">
+                  {requireGroup ? "Select a group…" : "No group (admin only)"}
+                </option>
+                {groupOptions.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+              {requireGroup && groupOptions.length === 0 && (
+                <p className="mt-1 text-xs text-amber-600">
+                  You are not assigned to any group yet — ask an admin.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* ── Dialer type ── */}
           <div>
@@ -394,7 +458,7 @@ export function CampaignManager() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <button
-                        onClick={() => router.push(`/admin/campaigns/${c.id}`)}
+                        onClick={() => router.push(`${consoleBase}/campaigns/${c.id}`)}
                         className="font-semibold text-indigo-600 hover:underline text-left"
                       >
                         {c.name}
@@ -418,6 +482,12 @@ export function CampaignManager() {
                             </span>
                           ) : null;
                         })()}
+                      {/* Group badge */}
+                      {c.group_name && (
+                        <span className="mt-1 ml-1 inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                          👥 {c.group_name}
+                        </span>
+                      )}
                       {/* Gateway chips */}
                       {gws.length > 0 && (
                         <div className="mt-1 flex flex-wrap gap-1">

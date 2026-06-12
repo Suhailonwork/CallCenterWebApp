@@ -1,37 +1,52 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { query, queryOne, pool } from '@/lib/db';
+import { query, pool } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
+import { groupIdsForTL, tlOwnsGroup } from '@/lib/groups';
 import type { CampaignRow } from '@/types';
 
 export const runtime = 'nodejs';
 
-/** GET /api/admin/campaigns - campaigns with contact progress + assigned gateways. */
+/**
+ * GET /api/tl/campaigns - campaigns belonging to this TL's groups only.
+ * Same response shape as GET /api/admin/campaigns so the campaign UI
+ * component can be shared between the two consoles.
+ */
 export async function GET() {
-  const u = await authenticate(['admin']);
+  const u = await authenticate(['tl']);
   if (isError(u)) return u;
 
+  const groupIds = await groupIdsForTL(u.id);
+  if (groupIds.length === 0) return ok({ campaigns: [] });
+
+  const ph = groupIds.map(() => '?').join(',');
   const campaigns = await query<CampaignRow>(
     `SELECT c.id, c.name, c.description, c.status, c.dialer_type,
-            c.group_id, grp.name AS group_name,
+            c.group_id, g.name AS group_name,
             DATE_FORMAT(c.created_at, '%Y-%m-%dT%H:%i:%s') AS created_at,
             COUNT(DISTINCT d.id)  AS total_contacts,
             COALESCE(SUM(d.called), 0) AS called_contacts
        FROM campaigns c
-       LEFT JOIN \`groups\` grp ON grp.id = c.group_id
+       JOIN \`groups\` g ON g.id = c.group_id
        LEFT JOIN csv_data d ON d.campaign_id = c.id
+      WHERE c.group_id IN (${ph})
       GROUP BY c.id
       ORDER BY c.created_at DESC`,
+    groupIds,
   );
 
-  // Attach gateway list to each campaign
-  const gatewayRows = await query<{ campaign_id: number; gateway_id: number; name: string; ip: string; port: number; channels: number; status: string }>(
-    `SELECT cg.campaign_id, g.id AS gateway_id, g.name, g.ip, g.port, g.channels, g.status
+  if (campaigns.length === 0) return ok({ campaigns: [] });
+
+  const ids = campaigns.map((c) => c.id);
+  const gatewayRows = await query<any>(
+    `SELECT cg.campaign_id, g.id AS gateway_id, g.id, g.name, g.ip, g.port, g.channels, g.status
        FROM campaign_gateways cg
-       JOIN gsm_gateways g ON g.id = cg.gateway_id`,
+       JOIN gsm_gateways g ON g.id = cg.gateway_id
+      WHERE cg.campaign_id IN (${ids.map(() => '?').join(',')})`,
+    ids,
   );
 
-  const gwMap: Record<number, typeof gatewayRows> = {};
+  const gwMap: Record<number, any[]> = {};
   for (const row of gatewayRows) {
     if (!gwMap[row.campaign_id]) gwMap[row.campaign_id] = [];
     gwMap[row.campaign_id].push(row);
@@ -50,22 +65,21 @@ const createSchema = z.object({
   dialer_type: z.enum(DIALER_TYPES).optional().default('manual'),
   gatewayIds:  z.array(z.number().int().positive()).optional().default([]),
   recording_enabled: z.boolean().optional().default(false),
-  group_id:    z.number().int().positive().nullable().optional(),
+  group_id:    z.number().int().positive(),
 });
 
-/** POST /api/admin/campaigns - create a campaign with optional gateway assignments. */
+/** POST /api/tl/campaigns - create a campaign inside one of the TL's groups. */
 export async function POST(req: Request) {
-  const u = await authenticate(['admin']);
+  const u = await authenticate(['tl']);
   if (isError(u)) return u;
 
   const parsed = createSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return fail('Invalid campaign data');
+  if (!parsed.success) return fail('Invalid campaign data (a group is required)');
   const d = parsed.data;
 
-  // Optional group ownership — validate the group exists before inserting.
-  if (d.group_id != null) {
-    const grp = await queryOne('SELECT id FROM `groups` WHERE id = ?', [d.group_id]);
-    if (!grp) return fail('Selected group not found');
+  // RBAC: a TL may only create campaigns in groups they run.
+  if (!(await tlOwnsGroup(u.id, d.group_id))) {
+    return fail('You are not a team lead of that group', 403);
   }
 
   const conn = await pool.getConnection();
@@ -75,11 +89,10 @@ export async function POST(req: Request) {
     const [res]: any = await conn.execute(
       `INSERT INTO campaigns (name, description, script, created_by, group_id, status, dialer_type, recording_enabled)
        VALUES (?,?,?,?,?, 'active', ?, ?)`,
-      [d.name, d.description ?? null, d.script ?? null, u.id, d.group_id ?? null, d.dialer_type, d.recording_enabled ? 1 : 0],
+      [d.name, d.description ?? null, d.script ?? null, u.id, d.group_id, d.dialer_type, d.recording_enabled ? 1 : 0],
     );
     const campaignId: number = res.insertId;
 
-    // Assign gateways
     if (d.gatewayIds.length > 0) {
       const placeholders = d.gatewayIds.map(() => '(?, ?)').join(', ');
       const vals = d.gatewayIds.flatMap((gid) => [campaignId, gid]);
@@ -95,16 +108,16 @@ export async function POST(req: Request) {
         action: 'create_campaign',
         entity: 'campaigns',
         entityId: campaignId,
-        details: { name: d.name, dialer_type: d.dialer_type, gatewayIds: d.gatewayIds },
+        details: { name: d.name, dialer_type: d.dialer_type, group_id: d.group_id, by: 'tl' },
       },
       conn,
     );
 
     await conn.commit();
     return ok({ id: campaignId }, 201);
-} catch (e) {
+  } catch (e) {
     await conn.rollback();
-    console.error('[campaigns] create failed:', e);
+    console.error('[tl/campaigns] create failed:', e);
     return fail('Failed to create campaign', 500);
   } finally {
     conn.release();

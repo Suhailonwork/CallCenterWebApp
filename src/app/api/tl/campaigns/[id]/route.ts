@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { query, pool } from '@/lib/db';
+import { pool } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
+import { tlOwnsCampaign } from '@/lib/groups';
 
 export const runtime = 'nodejs';
 
@@ -9,16 +10,20 @@ const schema = z.object({
   status:      z.enum(['active', 'paused', 'completed']).optional(),
   dialer_type: z.enum(['predictive', 'manual', 'inbound', 'ratio']).optional(),
   gatewayIds:  z.array(z.number().int().positive()).optional(),
-  group_id:    z.number().int().positive().nullable().optional(),
 });
 
-/** PATCH /api/admin/campaigns/:id - change status and/or reassign gateways. */
+/** PATCH /api/tl/campaigns/:id - edit a campaign inside the TL's groups. */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
-  const u = await authenticate(['admin']);
+  const u = await authenticate(['tl']);
   if (isError(u)) return u;
 
   const id = Number(params.id);
   if (!Number.isInteger(id)) return fail('Invalid campaign id');
+
+  // RBAC: the campaign must belong to one of this TL's groups.
+  if (!(await tlOwnsCampaign(u.id, id))) {
+    return fail('Campaign is not in your group', 403);
+  }
 
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return fail('Invalid data');
@@ -31,25 +36,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (d.status) {
       await conn.execute('UPDATE campaigns SET status = ? WHERE id = ?', [d.status, id]);
     }
-
     if (d.dialer_type) {
       await conn.execute('UPDATE campaigns SET dialer_type = ? WHERE id = ?', [d.dialer_type, id]);
     }
-
-    if (d.group_id !== undefined) {
-      if (d.group_id !== null) {
-        const [grp]: any = await conn.execute('SELECT id FROM `groups` WHERE id = ?', [d.group_id]);
-        if (grp.length === 0) {
-          await conn.rollback();
-          return fail('Selected group not found', 400);
-        }
-      }
-      await conn.execute('UPDATE campaigns SET group_id = ? WHERE id = ?', [d.group_id, id]);
-    }
-
     if (d.gatewayIds !== undefined) {
-      // Validate the gateway ids exist before inserting, so a stale id gives a
-      // clear error instead of a foreign-key 500.
       if (d.gatewayIds.length > 0) {
         const ph = d.gatewayIds.map(() => '?').join(',');
         const [valid]: any = await conn.execute(
@@ -63,7 +53,6 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
           return fail(`Gateway id(s) not found: ${missing.join(', ')}`, 400);
         }
       }
-      // Full replace: delete existing, insert new set
       await conn.execute('DELETE FROM campaign_gateways WHERE campaign_id = ?', [id]);
       if (d.gatewayIds.length > 0) {
         const placeholders = d.gatewayIds.map(() => '(?, ?)').join(', ');
@@ -76,7 +65,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     await logAudit(
-      { userId: u.id, action: 'update_campaign', entity: 'campaigns', entityId: id },
+      { userId: u.id, action: 'update_campaign', entity: 'campaigns', entityId: id, details: { by: 'tl' } },
       conn,
     );
 
@@ -84,12 +73,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     return ok({ ok: true });
   } catch (e: any) {
     await conn.rollback();
-    console.error('[campaign PATCH] failed:', e);
-    // Surface the real DB error so it is debuggable from the client too.
+    console.error('[tl campaign PATCH] failed:', e);
     return fail(`Update failed: ${e?.sqlMessage ?? e?.message ?? String(e)}`, 500);
   } finally {
     conn.release();
   }
 }
-
-/** DELETE /api/admin/campaigns/:id is intentionally not implemented here. */

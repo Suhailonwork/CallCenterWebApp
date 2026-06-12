@@ -28,6 +28,9 @@ DROP TABLE IF EXISTS call_notes;
 DROP TABLE IF EXISTS calls;
 DROP TABLE IF EXISTS csv_data;
 DROP TABLE IF EXISTS campaigns;
+DROP TABLE IF EXISTS group_agents;
+DROP TABLE IF EXISTS group_tl;
+DROP TABLE IF EXISTS `groups`;
 DROP TABLE IF EXISTS employees;
 DROP TABLE IF EXISTS teams;
 DROP TABLE IF EXISTS users;
@@ -78,6 +81,42 @@ CREATE TABLE employees (
   CONSTRAINT fk_employees_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ---- groups: a named unit of TLs + agents that owns campaigns ----
+-- NOTE: `groups` is a reserved word in MySQL 8 — always backtick it.
+CREATE TABLE `groups` (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  name        VARCHAR(120) NOT NULL UNIQUE,
+  description VARCHAR(500) NULL,
+  created_by  INT NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_groups_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- group_tl: which Team Leads run a group (a group can have several) ----
+CREATE TABLE group_tl (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  group_id   INT NOT NULL,
+  tl_id      INT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_group_tl (group_id, tl_id),
+  CONSTRAINT fk_gtl_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE,
+  CONSTRAINT fk_gtl_user  FOREIGN KEY (tl_id)    REFERENCES users(id)    ON DELETE CASCADE,
+  INDEX idx_gtl_tl (tl_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- group_agents: which agents belong to a group ----
+CREATE TABLE group_agents (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  group_id   INT NOT NULL,
+  agent_id   INT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_group_agent (group_id, agent_id),
+  CONSTRAINT fk_ga_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ga_user  FOREIGN KEY (agent_id) REFERENCES users(id)    ON DELETE CASCADE,
+  INDEX idx_ga_agent (agent_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---- campaigns: a calling campaign (auto-dialer source) ----
 CREATE TABLE campaigns (
   id                  INT AUTO_INCREMENT PRIMARY KEY,
@@ -85,6 +124,7 @@ CREATE TABLE campaigns (
   description         TEXT NULL,
   script              TEXT NULL,
   created_by          INT NULL,
+  group_id            INT NULL,
   status              ENUM('active','paused','completed') NOT NULL DEFAULT 'active',
   dialer_type         ENUM('predictive','manual','inbound','ratio') NOT NULL DEFAULT 'manual',
   calling_start       TIME NULL,
@@ -92,8 +132,10 @@ CREATE TABLE campaigns (
   retry_count         INT NOT NULL DEFAULT 0,
   retry_delay_minutes INT NOT NULL DEFAULT 60,
   created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_campaigns_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-  INDEX idx_campaigns_status (status)
+  CONSTRAINT fk_campaigns_creator FOREIGN KEY (created_by) REFERENCES users(id)    ON DELETE SET NULL,
+  CONSTRAINT fk_campaigns_group   FOREIGN KEY (group_id)   REFERENCES `groups`(id) ON DELETE SET NULL,
+  INDEX idx_campaigns_status (status),
+  INDEX idx_campaigns_group (group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- csv_data: uploaded contacts belonging to a campaign ----

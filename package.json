@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "node server.mjs prod",
     "db:migrate": "node db/migrate.mjs",
+    "db:migrate:groups": "node db/migrate-groups.mjs",
     "db:seed": "node db/seed.mjs",
     "db:reset": "node db/migrate.mjs && node db/seed.mjs"
   },

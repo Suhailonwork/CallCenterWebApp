@@ -7,9 +7,9 @@ import { provisionGatewayEndpoint, gwEndpoint } from '@/lib/asteriskRealtime';
 
 export const runtime = 'nodejs';
 
-/** GET /api/admin/gateways — list all GSM gateways */
+/** GET /api/admin/gateways — list all GSM gateways (TL: read-only, for campaign setup) */
 export async function GET() {
-  const u = await authenticate(['admin']);
+  const u = await authenticate(['admin', 'tl']);
   if (isError(u)) return u;
 
   try {

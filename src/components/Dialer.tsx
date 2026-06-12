@@ -147,6 +147,7 @@ export function Dialer() {
   const [registered, setRegistered] = useState(false);
   const [callState, setCallState] = useState<CallState>("idle");
   const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignsLoaded, setCampaignsLoaded] = useState(false);
   const [contact, setContact] = useState<Contact | null>(null);
   const [autoRunning, setAutoRunning] = useState(false);
@@ -254,7 +255,12 @@ export function Dialer() {
       try {
         const res = await fetch("/api/employee/campaigns");
         const data = await res.json();
-        if (res.ok && data.campaigns?.length) setCampaign(data.campaigns[0]);
+        if (res.ok && data.campaigns?.length) {
+          // All campaigns the agent may work (assigned + group); the first
+          // one stays auto-selected so the existing flow is unchanged.
+          setCampaigns(data.campaigns);
+          setCampaign(data.campaigns[0]);
+        }
       } catch {
         /* ignore */
       } finally {
@@ -530,6 +536,16 @@ export function Dialer() {
 
   const noCampaign = campaignsLoaded && !campaign;
 
+  /** Switch to another allowed campaign (only while idle, dialer stopped). */
+  function switchCampaign(id: number) {
+    const next = campaigns.find((c) => c.id === id);
+    if (!next || next.id === campaign?.id) return;
+    setCampaign(next);
+    setComplete(false);
+    // Let the predictive/ratio auto-start kick in again for the new campaign.
+    autoStartedRef.current = false;
+  }
+
   return (
     <div className="mx-auto max-w-4xl">
       <audio ref={audioRef} autoPlay muted={false} className="hidden" />
@@ -571,7 +587,27 @@ export function Dialer() {
                     <p className="text-xs font-medium text-slate-400">
                       Campaign
                     </p>
-                    <p className="font-semibold">{campaign?.name ?? "…"}</p>
+                    {campaigns.length > 1 ? (
+                      <select
+                        value={campaign?.id ?? ""}
+                        disabled={callState !== "idle" || autoRunning}
+                        onChange={(e) => switchCampaign(Number(e.target.value))}
+                        className="mt-0.5 rounded-lg border border-slate-300 px-2 py-1 text-sm font-semibold disabled:opacity-60"
+                        title={
+                          autoRunning
+                            ? "Stop the dialer before switching campaigns"
+                            : undefined
+                        }
+                      >
+                        {campaigns.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="font-semibold">{campaign?.name ?? "…"}</p>
+                    )}
                   </div>
                   {campaign?.dialer_type === "predictive" ||
                   campaign?.dialer_type === "ratio" ? (

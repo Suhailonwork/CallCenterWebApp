@@ -1,5 +1,6 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { pool } from '@/lib/db';
+import { agentCanAccessCampaign } from '@/lib/groups';
 
 export const runtime = 'nodejs';
 
@@ -20,6 +21,11 @@ export async function GET(req: Request) {
   const campaignId = Number(new URL(req.url).searchParams.get('campaignId'));
   if (!Number.isInteger(campaignId) || campaignId <= 0) {
     return fail('A valid campaignId is required');
+  }
+
+  // RBAC: the agent must be assigned to this campaign or be in its group.
+  if (!(await agentCanAccessCampaign(user.id, campaignId))) {
+    return fail('You are not assigned to this campaign', 403);
   }
 
   const conn = await pool.getConnection();

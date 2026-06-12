@@ -17,6 +17,7 @@ export default async function TeamLeadLayout({
       userName={user.name}
       nav={[
         { href: '/tl/dashboard', label: 'Dashboard' },
+        { href: '/tl/campaigns', label: 'Campaigns' },
         { href: '/tl/breaks', label: 'Break Requests' },
       ]}
     >
