@@ -1,7 +1,6 @@
 import { authenticate, isError, ok } from '@/lib/api';
-import { employeesUnderTL } from '@/lib/org';
 import { statsForEmployees } from '@/lib/orgMetrics';
-import { agentsInTLGroups } from '@/lib/groups';
+import { tlTeam } from '@/lib/groups';
 
 export const runtime = 'nodejs';
 
@@ -14,11 +13,7 @@ export async function GET() {
   const u = await authenticate(['tl']);
   if (isError(u)) return u;
 
-  const direct = await employeesUnderTL(u.id);
-  const groupAgents = await agentsInTLGroups(u.id);
-  const seen = new Set(direct.map((e) => e.id));
-  const employees = [...direct, ...groupAgents.filter((e) => !seen.has(e.id))];
-
+  const employees = await tlTeam(u.id);
   const stats = await statsForEmployees(employees.map((e) => e.id));
   return ok({ employees, stats });
 }

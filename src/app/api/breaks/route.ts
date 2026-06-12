@@ -1,5 +1,6 @@
 import { authenticate, isError, ok } from '@/lib/api';
-import { employeesUnderManager, employeesUnderTL } from '@/lib/org';
+import { employeesUnderManager } from '@/lib/org';
+import { tlTeam } from '@/lib/groups';
 import { breaksForEmployees } from '@/lib/breaks';
 
 export const runtime = 'nodejs';
@@ -12,7 +13,7 @@ export async function GET() {
   const employees =
     u.role === 'manager'
       ? await employeesUnderManager(u.id)
-      : await employeesUnderTL(u.id);
+      : await tlTeam(u.id); // reports_to + group agents
 
   const breaks = await breaksForEmployees(
     employees.map((e) => e.id),

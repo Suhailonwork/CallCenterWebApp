@@ -1,6 +1,7 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { query, queryOne } from '@/lib/db';
-import { employeesUnderManager, employeesUnderTL } from '@/lib/org';
+import { employeesUnderManager } from '@/lib/org';
+import { tlTeam } from '@/lib/groups';
 import { broadcastChange } from '@/lib/realtime';
 
 export const runtime = 'nodejs';
@@ -43,7 +44,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const team =
       u.role === 'manager'
         ? await employeesUnderManager(u.id)
-        : await employeesUnderTL(u.id);
+        : await tlTeam(u.id); // reports_to + group agents
     if (!team.some((e) => e.id === brk.employee_id)) {
       return fail('Not a member of your team', 403);
     }

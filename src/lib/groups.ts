@@ -1,4 +1,5 @@
 import { query, queryOne } from './db';
+import { employeesUnderTL } from './org';
 
 /**
  * Group-Based Campaign Management — data access + RBAC helpers.
@@ -153,4 +154,18 @@ export async function agentsInTLGroups(tlId: number) {
       ORDER BY u.name`,
     [tlId],
   );
+}
+
+/**
+ * Everyone a TL is responsible for: the legacy reporting line
+ * (users.reports_to) plus the agents of the TL's groups, deduped.
+ * Use this everywhere a TL's "team" is needed (dashboard, breaks, stats).
+ */
+export async function tlTeam(tlId: number) {
+  const [direct, groupAgents] = await Promise.all([
+    employeesUnderTL(tlId),
+    agentsInTLGroups(tlId),
+  ]);
+  const seen = new Set(direct.map((e) => e.id));
+  return [...direct, ...groupAgents.filter((a) => !seen.has(a.id))];
 }
