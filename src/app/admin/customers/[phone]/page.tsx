@@ -211,13 +211,7 @@ export default function CustomerDetailPage() {
                           src={`/api/recordings/${encodeURIComponent(c.recording_url)}`}
                           className="h-8"
                         />
-                        <a
-                          href={`/api/recordings/${encodeURIComponent(c.recording_url)}`}
-                          download
-                          className="text-xs text-indigo-600 hover:underline whitespace-nowrap"
-                        >
-                          Download
-                        </a>
+                       
                       </div>
                     ) : (
                       <span className="text-slate-400">—</span>
