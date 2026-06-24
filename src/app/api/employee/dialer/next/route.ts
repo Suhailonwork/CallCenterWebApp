@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     await conn.beginTransaction();
 
     const [rows]: any = await conn.execute(
-      `SELECT id, phone_number, name, email, company
+      `SELECT id, phone_number, name, email, company, custom_fields
          FROM csv_data
         WHERE campaign_id = ?
           AND called = 0

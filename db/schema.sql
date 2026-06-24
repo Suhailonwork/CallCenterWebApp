@@ -18,6 +18,7 @@ DROP TABLE IF EXISTS ps_aors;
 DROP TABLE IF EXISTS agent_sessions;
 DROP TABLE IF EXISTS campaign_gateways;
 DROP TABLE IF EXISTS gsm_gateways;
+DROP TABLE IF EXISTS data_tables;
 DROP TABLE IF EXISTS campaign_assignments;
 DROP TABLE IF EXISTS settings;
 DROP TABLE IF EXISTS audit_logs;
@@ -125,6 +126,7 @@ CREATE TABLE campaigns (
   script              TEXT NULL,
   created_by          INT NULL,
   group_id            INT NULL,
+  data_table_id       INT NULL COMMENT 'Optional reusable Data Table that defines which CSV columns are stored in csv_data.custom_fields',
   status              ENUM('active','paused','completed') NOT NULL DEFAULT 'active',
   dialer_type         ENUM('predictive','manual','inbound','ratio') NOT NULL DEFAULT 'manual',
   calling_start       TIME NULL,
@@ -279,6 +281,19 @@ CREATE TABLE campaign_assignments (
   CONSTRAINT fk_ca_employee FOREIGN KEY (employee_id) REFERENCES users(id)     ON DELETE CASCADE,
   CONSTRAINT fk_ca_assigner FOREIGN KEY (assigned_by) REFERENCES users(id)     ON DELETE SET NULL,
   INDEX idx_ca_employee (employee_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- data_tables: reusable, ordered column-name sets for campaign CSV uploads ----
+-- A campaign may reference one data_table; on CSV upload only that table's
+-- columns (in order) are stored into csv_data.custom_fields. No per-table SQL
+-- tables are ever created — the actual cell values live in the existing JSON column.
+CREATE TABLE data_tables (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  name       VARCHAR(120) NOT NULL,
+  columns    JSON NOT NULL COMMENT 'Ordered array of column names',
+  created_by INT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_data_tables_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- gsm_gateways: physical GSM/VoIP gateway devices ----

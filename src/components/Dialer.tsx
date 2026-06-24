@@ -7,6 +7,34 @@ import { getSocket } from "@/lib/useSocket";
 import { Button } from "@/components/Button";
 import type { Campaign, Contact, SipConfig, CallDisposition } from "@/types";
 
+
+
+/**
+ * Normalize a contact's custom_fields into ordered [label, value] entries.
+ * Campaigns with a Data Table store an ORDERED array of [col, value] pairs
+ * (so the agent sees columns in the table's exact order — MySQL JSON objects
+ * re-sort their keys, arrays don't). Legacy/no-table contacts store a plain
+ * object, which we still render via Object.entries. Both shapes are accepted,
+ * whether already parsed (from JSON columns / socket) or a JSON string.
+ */
+function asEntries(v: unknown): [string, unknown][] {
+  let parsed: unknown = v;
+  if (!parsed) return [];
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { return []; }
+  }
+  if (Array.isArray(parsed)) {
+    return parsed
+      .filter((p) => Array.isArray(p) && p.length >= 2)
+      .map((p) => [String((p as unknown[])[0]), (p as unknown[])[1]] as [string, unknown]);
+  }
+  if (parsed && typeof parsed === "object") {
+    return Object.entries(parsed as Record<string, unknown>);
+  }
+  return [];
+}
+
+
 const DIAL_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 
 const DIALER_LABELS: Record<string, string> = {
@@ -185,7 +213,6 @@ export function Dialer() {
   campaignRef.current = campaign;
   const autoRunningRef = useRef(false);
   autoRunningRef.current = autoRunning;
-  const autoStartedRef = useRef(false);
   const reasonNeedsPayment = pcReason.startsWith("$");
 
   const handleCallState = useCallback((s: CallState) => {
@@ -352,44 +379,6 @@ export function Dialer() {
     return true;
   }
 
-  // ---- progressive auto-dialer: fetch next contact and call it ----
-  async function dialNext() {
-    if (!autoRunningRef.current) return;
-    const camp = campaignRef.current;
-    if (!camp) return;
-    try {
-      const res = await fetch(
-        `/api/employee/dialer/next?campaignId=${camp.id}`,
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error ?? "Could not load next contact");
-        return;
-      }
-      if (!data.contact) {
-        autoRunningRef.current = false;
-        setAutoRunning(false);
-        setComplete(true);
-        setContact(null);
-        toast.info("Campaign complete — every contact has been dialled");
-        return;
-      }
-      setContact(data.contact);
-      const placed = startCall(
-        data.contact.phone_number,
-        data.contact.name,
-        camp.id,
-        data.contact.id,
-      );
-      if (!placed) {
-        autoRunningRef.current = false;
-        setAutoRunning(false);
-      }
-    } catch {
-      toast.error("Network error loading the next contact");
-    }
-  }
-
   // ---- check gateway reachability when campaign changes ----
   useEffect(() => {
     if (!campaign) return;
@@ -407,32 +396,56 @@ export function Dialer() {
       });
   }, [campaign]);
 
-  // ---- auto-start the dialer once registered + a campaign is loaded ----
-  // Only auto-start for predictive and ratio dialers; manual/inbound require agent action.
+  // ---- PREDICTIVE: go available + receive CONNECTED calls ----
+  // Agent ab call ORIGINATE nahi karta. Server (engine) call lagata hai,
+  // human uthata hai, tab agent ko already-connected call milti hai.
   useEffect(() => {
-    const isAutoDialer =
+    const isAuto =
       campaign?.dialer_type === "predictive" ||
       campaign?.dialer_type === "ratio";
-    if (registered && campaign && isAutoDialer && !autoStartedRef.current) {
-      autoStartedRef.current = true;
-      autoRunningRef.current = true;
-      setAutoRunning(true);
-      void dialNext();
-    }
+    if (!registered || !campaign || !isAuto) return;
+
+    const socket = getSocket();
+    socket.emit("agent-available", {
+      extension: sipRef.current?.extension,
+      campaignId: campaign.id,
+    });
+    setAutoRunning(true);
+
+    const onAssigned = (c: Contact) => {
+      setContact(c);
+      // call already CONNECTED hai — wrap-up ke liye meta set karo
+      metaRef.current = {
+        placedAt: Date.now(),
+        answeredAt: Date.now(),
+        phoneNumber: c.phone_number,
+        contactName: c.name ?? null,
+        campaignId: campaign.id,
+        csvDataId: c.id,
+      };
+      setElapsed(0);
+      setCallState("in-call");
+    };
+    socket.on("assigned-call", onAssigned);
+    return () => {
+      socket.off("assigned-call", onAssigned);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registered, campaign]);
 
   function startAuto() {
     if (!campaign) return;
     setComplete(false);
-    autoRunningRef.current = true;
     setAutoRunning(true);
-    if (callState === "idle" && !postCall && !contact) void dialNext();
+    getSocket().emit("agent-available", {
+      extension: sipRef.current?.extension,
+      campaignId: campaign.id,
+    });
   }
 
   function stopAuto() {
-    autoRunningRef.current = false;
     setAutoRunning(false);
+    getSocket().emit("agent-break");
   }
 
   function onHangup() {
@@ -526,7 +539,13 @@ export function Dialer() {
       setCallState("idle");
       setElapsed(0);
       setContact(null);
-      if (autoRunningRef.current) void dialNext();
+      // 🆕 wrap-up ho gaya -> wapas available, engine agli connected call dega
+      if (autoRunningRef.current) {
+        getSocket().emit("agent-available", {
+          extension: sipRef.current?.extension,
+          campaignId: campaignRef.current?.id,
+        });
+      }
     } catch {
       toast.error("Network error");
     } finally {
@@ -540,10 +559,11 @@ export function Dialer() {
   function switchCampaign(id: number) {
     const next = campaigns.find((c) => c.id === id);
     if (!next || next.id === campaign?.id) return;
+    // pehle current campaign se break le lo
+    getSocket().emit("agent-break");
+    setAutoRunning(false);
     setCampaign(next);
     setComplete(false);
-    // Let the predictive/ratio auto-start kick in again for the new campaign.
-    autoStartedRef.current = false;
   }
 
   return (
@@ -625,8 +645,8 @@ export function Dialer() {
                       {complete
                         ? "Campaign complete"
                         : autoRunning
-                          ? "Dialer running"
-                          : "Dialer stopped"}
+                          ? "Available"
+                          : "On break"}
                     </span>
                   ) : (
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 capitalize">
@@ -645,7 +665,7 @@ export function Dialer() {
                         onClick={stopAuto}
                         className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
                       >
-                        Stop
+                        Take break
                       </button>
                     ) : (
                       <button
@@ -653,15 +673,16 @@ export function Dialer() {
                         disabled={!registered || !campaign}
                         className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-40"
                       >
-                        {complete ? "Restart" : "Start dialer"}
+                        {complete ? "Restart" : "Go available"}
                       </button>
                     ))}
                 </div>
                 {(campaign?.dialer_type === "predictive" ||
                   campaign?.dialer_type === "ratio") && (
                   <p className="mt-2 text-xs text-slate-400">
-                    Runs continuously. Use Stop before taking a break; it also
-                    stops when the campaign is finished or you log out.
+                    Server places the calls. A connected customer is dropped
+                    onto your screen — you won&apos;t see dialing or ringing.
+                    Take a break before stepping away.
                   </p>
                 )}
                 {campaign?.dialer_type === "manual" && (
@@ -683,24 +704,28 @@ export function Dialer() {
             <h2 className="mb-2 text-sm font-semibold text-slate-500">
               Customer details
             </h2>
-            {contact ? (
+           {contact ? (
               <div className="space-y-1 text-sm">
                 <p className="text-lg font-semibold">
                   {contact.name ?? "Unknown contact"}
                 </p>
-                {contact.company && (
-                  <p className="text-slate-600">{contact.company}</p>
-                )}
                 <p className="font-mono text-slate-700">
                   {contact.phone_number}
                 </p>
-                {contact.email && (
-                  <p className="text-slate-500">{contact.email}</p>
-                )}
+                {asEntries(contact.custom_fields)
+                  .filter(([, val]) => val !== null && val !== "" && val !== undefined)
+                  .map(([key, val]) => (
+                    <p key={key} className="text-slate-600">
+                      <span className="font-medium text-slate-500">{key}:</span>{" "}
+                      {String(val)}
+                    </p>
+                  ))}
               </div>
             ) : (
               <p className="text-sm text-slate-400">
-                {autoRunning ? "Loading next contact…" : "No contact loaded."}
+                {autoRunning
+                  ? "Waiting for the next connected call…"
+                  : "No contact loaded."}
               </p>
             )}
           </div>

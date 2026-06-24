@@ -20,6 +20,7 @@ export default async function AdminLayout({
         { href: '/admin/users', label: 'Users & Teams' },
         { href: '/admin/groups', label: 'Groups' },
         { href: '/admin/campaigns', label: 'Campaigns' },
+        { href: '/admin/data-tables', label: 'Data Tables' },
         { href: '/admin/gateways', label: 'GSM Gateways' },
         { href: '/admin/reports', label: 'Reports' },
         { href: '/admin/settings', label: 'Settings' },

@@ -48,7 +48,8 @@ export function mapColumns(header: string[]) {
       idx.phone = i;
     } else if (
       idx.name < 0 &&
-      ['name', 'contact', 'contactname', 'fullname'].includes(k)
+      // 🔸 added 'customername' so your "Customer Name" column is detected
+      ['name', 'contact', 'contactname', 'fullname', 'customername'].includes(k)
     ) {
       idx.name = i;
     } else if (idx.email < 0 && k === 'email') {
@@ -61,4 +62,56 @@ export function mapColumns(header: string[]) {
     }
   });
   return idx;
+}
+
+// 🔸 NEW FUNCTION — turns every other column into the custom_fields object
+export function buildCustomFields(
+  header: string[],
+  row: string[],
+  idx: ReturnType<typeof mapColumns>,
+): Record<string, string> {
+  const core = new Set([idx.phone, idx.name, idx.email, idx.company]);
+  const out: Record<string, string> = {};
+  header.forEach((col, i) => {
+    if (core.has(i)) return;
+    const val = (row[i] ?? '').trim();
+    if (val !== '') out[col.trim()] = val;
+  });
+  return out;
+}
+
+/**
+ * Build custom_fields for a campaign that has a Data Table selected.
+ * Only the table's columns are stored, in the table's exact order, with the
+ * table's column name as the key. CSV headers are matched case-insensitively
+ * (and trimmed). Columns missing from the CSV (or with an empty cell) are
+ * skipped so the agent's customer card stays clean.
+ *
+ * Returns an ORDERED array of [column, value] pairs rather than an object,
+ * because MySQL JSON *objects* re-sort their keys on storage (by key length,
+ * then bytes) which would destroy the table's column order. JSON *arrays*
+ * preserve element order, so the agent sees the columns exactly as defined.
+ * The Dialer renders both this array shape and the legacy object shape.
+ */
+export function buildCustomFieldsForTable(
+  header: string[],
+  row: string[],
+  columns: string[],
+): [string, string][] {
+  // Map normalized header name -> column index (first occurrence wins).
+  const norm = (s: string) => s.trim().toLowerCase();
+  const headerIndex = new Map<string, number>();
+  header.forEach((h, i) => {
+    const k = norm(h);
+    if (!headerIndex.has(k)) headerIndex.set(k, i);
+  });
+
+  const out: [string, string][] = [];
+  for (const col of columns) {
+    const i = headerIndex.get(norm(col));
+    if (i === undefined) continue;
+    const val = (row[i] ?? '').trim();
+    if (val !== '') out.push([col, val]);
+  }
+  return out;
 }

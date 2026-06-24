@@ -8,6 +8,7 @@
     "start": "node server.mjs prod",
     "db:migrate": "node db/migrate.mjs",
     "db:migrate:groups": "node db/migrate-groups.mjs",
+    "db:migrate:data-tables": "node db/migrate-data-tables.mjs",
     "db:seed": "node db/seed.mjs",
     "db:reset": "node db/migrate.mjs && node db/seed.mjs"
   },

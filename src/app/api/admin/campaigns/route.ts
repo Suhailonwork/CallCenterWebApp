@@ -51,6 +51,7 @@ const createSchema = z.object({
   gatewayIds:  z.array(z.number().int().positive()).optional().default([]),
   recording_enabled: z.boolean().optional().default(false),
   group_id:    z.number().int().positive().nullable().optional(),
+  data_table_id: z.number().int().positive().nullable().optional(),
 });
 
 /** POST /api/admin/campaigns - create a campaign with optional gateway assignments. */
@@ -68,14 +69,20 @@ export async function POST(req: Request) {
     if (!grp) return fail('Selected group not found');
   }
 
+  // Optional data table — validate it exists before inserting.
+  if (d.data_table_id != null) {
+    const dt = await queryOne('SELECT id FROM data_tables WHERE id = ?', [d.data_table_id]);
+    if (!dt) return fail('Selected data table not found');
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
     const [res]: any = await conn.execute(
-      `INSERT INTO campaigns (name, description, script, created_by, group_id, status, dialer_type, recording_enabled)
-       VALUES (?,?,?,?,?, 'active', ?, ?)`,
-      [d.name, d.description ?? null, d.script ?? null, u.id, d.group_id ?? null, d.dialer_type, d.recording_enabled ? 1 : 0],
+      `INSERT INTO campaigns (name, description, script, created_by, group_id, data_table_id, status, dialer_type, recording_enabled)
+       VALUES (?,?,?,?,?,?, 'active', ?, ?)`,
+      [d.name, d.description ?? null, d.script ?? null, u.id, d.group_id ?? null, d.data_table_id ?? null, d.dialer_type, d.recording_enabled ? 1 : 0],
     );
     const campaignId: number = res.insertId;
 

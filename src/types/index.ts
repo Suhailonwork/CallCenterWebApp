@@ -26,11 +26,15 @@ export interface Campaign {
 }
 
 export interface Contact {
+  
   id: number;
   phone_number: string;
   name: string | null;
   email: string | null;
   company: string | null;
+  // Object = legacy/no-table contacts; array of [col, value] pairs = contacts
+  // imported under a Data Table (ordered). The Dialer renders both shapes.
+  custom_fields?: Record<string, unknown> | unknown[] | string | null;
 }
 
 export type CallDisposition =
@@ -143,6 +147,15 @@ export interface CampaignRow {
   called_contacts: number;
   group_id?: number | null;
   group_name?: string | null;
+  data_table_id?: number | null;
+}
+
+export interface DataTable {
+  id:         number;
+  name:       string;
+  columns:    string[];
+  created_by: number | null;
+  created_at: string;
 }
 
 export interface CallReportRow {
