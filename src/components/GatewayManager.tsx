@@ -116,10 +116,11 @@ export function GatewayManager() {
   }
 
   async function remove(gw: GsmGateway) {
-    if (!confirm(`Delete gateway "${gw.name}"? This will remove it from all campaigns.`)) return;
+    if (!confirm(`Delete gateway "${gw.name}"? This is only allowed if no campaign uses it.`)) return;
     const res = await fetch(`/api/admin/gateways/${gw.id}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
     if (res.ok) { toast.success('Gateway deleted'); refreshWithStatusCatchup(); }
-    else        { toast.error('Delete failed'); }
+    else        { toast.error(data.error ?? 'Delete failed'); }
   }
 
   async function toggleStatus(gw: GsmGateway) {

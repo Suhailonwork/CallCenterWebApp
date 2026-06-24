@@ -453,6 +453,103 @@ module.exports = function startAri(config) {
     return rows[0] ? rows[0].endpoint : null;
   }
 
+  // -------------------------------------------------------------------
+  //  DYNAMIC GATEWAY RESOLUTION for outbound (manual) calls.
+  //  Chain:  Campaign -> Assigned (active) Gateway -> asterisk_endpoint.
+  //  NOTHING is hardcoded — the env "dinstar"/TRUNK_ENDPOINT fallback is
+  //  never used for campaign dialing. If no valid endpoint resolves we
+  //  return null+reason and the caller refuses to dial.
+  // -------------------------------------------------------------------
+
+  // Read the X-Gateway SIP header the browser sets (the gateway of the
+  // campaign the agent currently has selected). Absent header -> null.
+  async function readGatewayHeader(channel) {
+    try {
+      const v = await channel.getChannelVar({
+        variable: "PJSIP_HEADER(read,X-Gateway)",
+      });
+      const val = v && v.value ? String(v.value).trim() : "";
+      return val || null;
+    } catch (e) {
+      return null; // header not present -> fall through to DB resolution
+    }
+  }
+
+  // Validate an endpoint name (e.g. "gw3") against gsm_gateways: it must
+  // exist, be active, and carry a non-empty endpoint. Returns info or null.
+  async function validateGatewayEndpoint(endpointName) {
+    if (!endpointName) return null;
+    const [rows] = await db.query(
+      `SELECT id, name, asterisk_endpoint AS endpoint, status
+         FROM gsm_gateways
+        WHERE asterisk_endpoint = ?
+        LIMIT 1`,
+      [endpointName],
+    );
+    const g = rows[0];
+    if (!g || g.status !== "active" || !g.endpoint) return null;
+    return { gatewayId: g.id, gatewayName: g.name, endpoint: g.endpoint };
+  }
+
+  // Resolve the active gateway for an agent from the campaigns they can
+  // access — group-based (primary) plus legacy per-agent assignments.
+  async function getActiveGatewayForExtension(extension) {
+    if (!extension) return null;
+    const [rows] = await db.query(
+      `SELECT g.id, g.name, g.asterisk_endpoint AS endpoint, c.id AS campaignId
+         FROM employees e
+         JOIN campaigns c
+           ON c.status = 'active'
+          AND ( c.id IN (SELECT campaign_id FROM campaign_assignments WHERE employee_id = e.user_id)
+                OR c.group_id IN (SELECT group_id FROM group_agents WHERE agent_id = e.user_id) )
+         JOIN campaign_gateways cg ON cg.campaign_id = c.id
+         JOIN gsm_gateways g
+           ON g.id = cg.gateway_id
+          AND g.status = 'active'
+          AND g.asterisk_endpoint IS NOT NULL
+          AND g.asterisk_endpoint <> ''
+        WHERE e.sip_extension = ?
+        ORDER BY c.id DESC
+        LIMIT 1`,
+      [extension],
+    );
+    const g = rows[0];
+    if (!g) return null;
+    return {
+      gatewayId: g.id,
+      gatewayName: g.name,
+      endpoint: g.endpoint,
+      campaignId: g.campaignId,
+    };
+  }
+
+  // Full resolution chain for one outbound call.
+  // Returns { gatewayId, gatewayName, endpoint, campaignId, via } or
+  // { reason } when nothing valid could be resolved.
+  async function resolveOutboundGateway(browserChannel, callerExt) {
+    // 1) Browser X-Gateway header (reflects the selected campaign's gateway).
+    const headerEp = await readGatewayHeader(browserChannel);
+    if (headerEp) {
+      const v = await validateGatewayEndpoint(headerEp).catch(() => null);
+      if (v) return { ...v, campaignId: null, via: "x-gateway-header" };
+      console.warn(
+        `[ari][outbound] X-Gateway "${headerEp}" is not an active/provisioned gateway — ignoring`,
+      );
+    }
+    // 2) DB: the agent's active campaign gateway.
+    if (callerExt) {
+      const v = await getActiveGatewayForExtension(callerExt).catch((e) => {
+        console.error(
+          "[ari][outbound] gateway lookup failed: " + (e && e.message),
+        );
+        return null;
+      });
+      if (v) return { ...v, via: "db-campaign" };
+      return { reason: `no active gateway for extension ${callerExt}` };
+    }
+    return { reason: "could not parse caller extension from channel name" };
+  }
+
   async function isRecordingEnabledForExtension(extension) {
     const [rows] = await db.query(
       `SELECT c.recording_enabled
@@ -515,31 +612,43 @@ module.exports = function startAri(config) {
     const target = (outboundPrefix || "") + dialed;
 
     // ----------------------------------------------------------------
-    //  DYNAMIC gateway selection.
+    //  DYNAMIC gateway resolution — campaign's assigned gateway only.
+    //  Order: (1) X-Gateway header the browser sends (selected campaign),
+    //         (2) the agent's active campaign gateway from the DB.
+    //  No hardcoded / env fallback: if nothing valid resolves we DO NOT dial,
+    //  we log the exact reason and hang up instead of throwing "Endpoint not set".
     // ----------------------------------------------------------------
     const extMatch = (browserChannel.name || "").match(/PJSIP\/(\d+)-/);
     const callerExt = extMatch ? extMatch[1] : null;
 
-    let selectedTrunk = trunkEndpoint; // fallback .env default
-    if (callerExt) {
+    const resolved = await resolveOutboundGateway(browserChannel, callerExt);
+    if (!resolved || !resolved.endpoint) {
+      const reason =
+        (resolved && resolved.reason) ||
+        "no active gateway assigned to the campaign";
+      console.error(
+        `[ari][outbound] CALL BLOCKED — not dialing. ` +
+          `ext=${callerExt || "?"} dialed=${dialed} ` +
+          `campaign=${(resolved && resolved.campaignId) || "?"} ` +
+          `gateway=${(resolved && resolved.gatewayName) || "none"} ` +
+          `endpoint=${(resolved && resolved.endpoint) || "none"} ` +
+          `reason="${reason}"`,
+      );
       try {
-        const gw = await getGatewayForExtension(callerExt);
-        if (gw) {
-          selectedTrunk = gw;
-          console.log(
-            `[ari] ext ${callerExt} -> gateway ${selectedTrunk} (from DB)`,
-          );
-        } else {
-          console.warn(
-            `[ari] ext ${callerExt}: no gateway in DB, default ${selectedTrunk}`,
-          );
-        }
+        await browserChannel.hangup();
       } catch (e) {
-        console.error("[ari] gateway lookup failed: " + (e && e.message));
+        /* gone */
       }
-    } else {
-      console.warn("[ari] could not parse extension from channel name");
+      return;
     }
+
+    const selectedTrunk = resolved.endpoint;
+    console.log(
+      `[ari][outbound] ext=${callerExt} ` +
+        `campaign=${resolved.campaignId ?? "?"} ` +
+        `gateway#${resolved.gatewayId ?? "?"} "${resolved.gatewayName ?? "?"}" ` +
+        `endpoint=PJSIP/${selectedTrunk} dialed=${dialed} via=${resolved.via}`,
+    );
 
     let done = false;
     let ringback = null;
@@ -773,10 +882,23 @@ module.exports = function startAri(config) {
     gateway,
   }) {
     if (!client) throw new Error("ARI not connected yet");
+    // Validate the resolved gateway endpoint before dialing — never originate
+    // against a missing/blank endpoint (would surface as "Endpoint not set").
+    if (!gateway) {
+      console.error(
+        `[ari][predictive] CALL BLOCKED — campaign=${campaignId} ` +
+          `contact=${contact && contact.id}: no active gateway endpoint resolved`,
+      );
+      throw new Error("No active gateway endpoint for campaign " + campaignId);
+    }
     const target = (outboundPrefix || "") + contact.phone_number;
     const chanId = "pred-" + contact.id + "-" + Date.now();
     const ch = client.Channel(chanId);
     predAttempts.set(chanId, { campaignId, agentId, agentExt, contact, gateway });
+    console.log(
+      `[ari][predictive] campaign=${campaignId} agent=${agentId} ` +
+        `endpoint=PJSIP/${gateway} -> ${target}`,
+    );
 
     let answered = false;
     // Stasis mein aaya = far end ne uthaya

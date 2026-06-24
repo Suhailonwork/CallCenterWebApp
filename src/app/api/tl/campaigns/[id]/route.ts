@@ -40,6 +40,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       await conn.execute('UPDATE campaigns SET dialer_type = ? WHERE id = ?', [d.dialer_type, id]);
     }
     if (d.gatewayIds !== undefined) {
+      // A campaign must always keep at least one gateway — never allow the
+      // edit to strip it down to zero (would break dialing).
+      if (d.gatewayIds.length === 0) {
+        await conn.rollback();
+        return fail('A campaign must have at least one GSM gateway assigned');
+      }
       if (d.gatewayIds.length > 0) {
         const ph = d.gatewayIds.map(() => '?').join(',');
         const [valid]: any = await conn.execute(

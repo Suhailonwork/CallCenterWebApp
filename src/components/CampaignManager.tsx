@@ -136,6 +136,10 @@ export function CampaignManager({
       toast.warning("Select the group this campaign belongs to");
       return;
     }
+    if (selectedGatewayIds.length === 0) {
+      toast.warning("Select at least one GSM gateway for this campaign");
+      return;
+    }
     setSaving(true);
     try {
       const res = await fetch(`${apiBase}/campaigns`, {
@@ -179,12 +183,15 @@ export function CampaignManager({
 
   async function updateCampaignGateways() {
     if (!editGwFor) return;
+    const cleanIds = editGwIds.filter((id) => Number.isInteger(id) && id > 0);
+    if (cleanIds.length === 0) {
+      toast.warning("A campaign must keep at least one GSM gateway");
+      return;
+    }
     const res = await fetch(`${apiBase}/campaigns/${editGwFor.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        gatewayIds: editGwIds.filter((id) => Number.isInteger(id) && id > 0),
-      }),
+      body: JSON.stringify({ gatewayIds: cleanIds }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
@@ -523,17 +530,39 @@ export function CampaignManager({
                           👥 {c.group_name}
                         </span>
                       )}
-                      {/* Gateway chips */}
+                      {/* Gateway chips — name · endpoint · live status (from DB/ARI) */}
                       {gws.length > 0 && (
                         <div className="mt-1 flex flex-wrap gap-1">
-                          {gws.map((gw) => (
-                            <span
-                              key={gw.id}
-                              className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700"
-                            >
-                              📡 {gw.name} ({gw.channels}ch)
-                            </span>
-                          ))}
+                          {gws.map((gw) => {
+                            const online = gwStatus[gw.id]?.reachable;
+                            const statusLabel =
+                              gw.status === "inactive"
+                                ? "● disabled"
+                                : online
+                                  ? "● online"
+                                  : online === false
+                                    ? "● offline"
+                                    : "● unknown";
+                            const statusColor =
+                              gw.status === "inactive"
+                                ? "text-slate-400"
+                                : online
+                                  ? "text-green-600"
+                                  : online === false
+                                    ? "text-red-600"
+                                    : "text-slate-400";
+                            return (
+                              <span
+                                key={gw.id}
+                                className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700"
+                              >
+                                📡 {gw.name} ·{" "}
+                                <span className="font-mono">gw{gw.id}</span> ·{" "}
+                                {gw.channels}ch
+                                <span className={statusColor}>{statusLabel}</span>
+                              </span>
+                            );
+                          })}
                         </div>
                       )}
                       {gws.length === 0 && (

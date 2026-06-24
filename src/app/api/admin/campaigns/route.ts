@@ -75,6 +75,22 @@ export async function POST(req: Request) {
     if (!dt) return fail('Selected data table not found');
   }
 
+  // A campaign MUST route through a GSM gateway — make it mandatory so calls
+  // never fall back to a missing endpoint ("Endpoint not set") at dial time.
+  if (!d.gatewayIds || d.gatewayIds.length === 0) {
+    return fail('Select at least one GSM gateway for this campaign');
+  }
+  {
+    const ph = d.gatewayIds.map(() => '?').join(',');
+    const valid = await query<{ id: number }>(
+      `SELECT id FROM gsm_gateways WHERE id IN (${ph})`,
+      d.gatewayIds,
+    );
+    if (valid.length !== d.gatewayIds.length) {
+      return fail('One or more selected gateways do not exist');
+    }
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();

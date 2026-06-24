@@ -81,6 +81,24 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
   if (!Number.isFinite(id)) return fail('Invalid id');
 
   try {
+    // Delete protection: never leave campaigns pointing at a removed gateway.
+    const [assigned]: any = await pool.execute(
+      `SELECT c.id, c.name
+         FROM campaign_gateways cg
+         JOIN campaigns c ON c.id = cg.campaign_id
+        WHERE cg.gateway_id = ?
+        ORDER BY c.name`,
+      [id],
+    );
+    if (assigned && assigned.length > 0) {
+      const names = assigned.map((r: any) => r.name).join(', ');
+      return fail(
+        `Cannot delete gateway. This gateway is assigned to active campaigns: ${names}. ` +
+          `Reassign those campaigns to another gateway first.`,
+        409,
+      );
+    }
+
     await pool.execute('DELETE FROM gsm_gateways WHERE id = ?', [id]);
     await logAudit({ userId: u.id, action: 'delete_gateway', entity: 'gsm_gateways', entityId: id });
     // Deprovision using auto-generated name — always matches what was provisioned

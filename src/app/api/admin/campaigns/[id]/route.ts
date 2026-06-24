@@ -48,6 +48,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     if (d.gatewayIds !== undefined) {
+      // A campaign must always keep at least one gateway — never allow the
+      // edit to strip it down to zero (would break dialing).
+      if (d.gatewayIds.length === 0) {
+        await conn.rollback();
+        return fail('A campaign must have at least one GSM gateway assigned');
+      }
       // Validate the gateway ids exist before inserting, so a stale id gives a
       // clear error instead of a foreign-key 500.
       if (d.gatewayIds.length > 0) {

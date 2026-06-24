@@ -101,7 +101,7 @@ export function DataTableManager() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Data Tables</h1>
+        <h1 className="text-lg font-semibold">CSV formate</h1>
         <button
           onClick={openCreate}
           className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
