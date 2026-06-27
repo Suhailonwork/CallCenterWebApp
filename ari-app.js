@@ -434,6 +434,10 @@ module.exports = function startAri(config) {
   let onFailedCb = () => {};
   const predAttempts = new Map(); // channelId -> { campaignId, agentId, agentExt, contact, gateway }
   let client = null; // module scope, taaki originatePredictive use kar sake
+  // ARI is considered "connected" once ari.connect() has resolved (REST client
+  // present). node-ari-client keeps the Stasis WebSocket reconnected on its own,
+  // so we deliberately do NOT flip a flag on transient WebSocketError events —
+  // doing that previously stranded the engine in a permanent "paused" state.
 
   // -------------------------------------------------------------------
   //  Look up the active outbound gateway for a given SIP extension.
@@ -599,6 +603,7 @@ module.exports = function startAri(config) {
       .catch((err) => {
         console.error("[ari] connection failed: " + (err && err.message));
         console.error("[ari] retrying in 5s...");
+        client = null; // not connected — engine pauses cleanly until retry succeeds
         setTimeout(connect, 5000);
       });
   }
@@ -940,6 +945,7 @@ module.exports = function startAri(config) {
     // Phase 2 TODO: yahan AMD chalao. MACHINE -> hangup + onFailedCb, return.
 
     let done = false;
+    let connected = false; // 🆕 did the agent leg actually bridge?
     const bridge = client.Bridge();
     const agentLegId = "pred-agent-" + gsmChannel.id;
     const agentLeg = client.Channel(agentLegId);
@@ -948,6 +954,18 @@ module.exports = function startAri(config) {
       if (done) return;
       done = true;
       predAttempts.delete(gsmChannel.id);
+      // 🆕 ROOT-CAUSE FIX: customer answered (so the GSM-leg ChannelDestroyed
+      // guard `if(!answered)` won't fire) but the agent never connected — e.g.
+      // agent no-answer, customer hung up while agent rang, or a bridge error.
+      // Without this the agent's reservation is never released and the
+      // predictive engine silently stops dialing for that agent. Release once.
+      if (!connected) {
+        try {
+          onFailedCb(agentId, contact, "ended-before-agent-connect");
+        } catch (e) {
+          console.error("[ari] onFailed (pred end) failed: " + (e && e.message));
+        }
+      }
       try {
         await agentLeg.hangup();
       } catch (e) {
@@ -1010,6 +1028,7 @@ module.exports = function startAri(config) {
         console.error("[ari] rec start: " + (e && e.message));
       }
 
+      connected = true; // 🆕 mark BEFORE notifying so end() won't double-release
       // server ko bolo -> woh agent ke browser pe contact emit karega
       onConnectCb(agentId, contact);
     });
@@ -1043,6 +1062,6 @@ module.exports = function startAri(config) {
 
   connect();
 
-  // 🆕 engine ke liye expose
-  return { originatePredictive, setHandlers };
+  // 🆕 engine ke liye expose. isConnected() => REST client present (can originate).
+  return { originatePredictive, setHandlers, isConnected: () => !!client };
 };

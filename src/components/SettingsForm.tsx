@@ -15,6 +15,11 @@ const FIELDS: { key: string; label: string; type: string }[] = [
     label: 'Call recording retention (days)',
     type: 'number',
   },
+  // ── Predictive dialer ──
+  { key: 'predictive_ratio', label: 'Predictive ratio (calls per available agent)', type: 'number' },
+  { key: 'phone_cooldown_seconds', label: 'Phone cooldown (seconds before re-dialing a number)', type: 'number' },
+  { key: 'dialer_claim_timeout_sec', label: 'Contact claim timeout (seconds)', type: 'number' },
+  { key: 'dialer_oncall_timeout_sec', label: 'Stuck on-call recovery timeout (seconds)', type: 'number' },
 ];
 
 export function SettingsForm() {

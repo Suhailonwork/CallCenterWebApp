@@ -12,6 +12,11 @@ const KNOWN_KEYS = [
   'work_end',
   'min_password_length',
   'recording_retention_days',
+  // Predictive dialer tunables (read live by predictive-engine.js).
+  'predictive_ratio',
+  'phone_cooldown_seconds',
+  'dialer_claim_timeout_sec',
+  'dialer_oncall_timeout_sec',
 ];
 
 /** GET /api/admin/settings - all system settings. */
