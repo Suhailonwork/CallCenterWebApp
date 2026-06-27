@@ -19,6 +19,7 @@ export default async function TeamLeadLayout({
         { href: '/tl/dashboard', label: 'Dashboard' },
         { href: '/tl/campaigns', label: 'Campaigns' },
         { href: '/tl/breaks', label: 'Break Requests' },
+        { href: '/tl/logins', label: 'Logins' },
       ]}
     >
       {children}

@@ -13,10 +13,12 @@ export interface OrgPerson {
 export async function listUsers(): Promise<AdminUser[]> {
   return query<AdminUser>(
     `SELECT u.id, u.name, u.email, u.role, u.team_id,
-            t.name AS team_name, u.reports_to, u.is_active,
+            t.name AS team_name, u.shift_id, s.name AS shift_name,
+            u.reports_to, u.is_active,
             DATE_FORMAT(u.created_at, '%Y-%m-%d') AS created_at
        FROM users u
        LEFT JOIN teams t ON t.id = u.team_id
+       LEFT JOIN shifts s ON s.id = u.shift_id
       ORDER BY FIELD(u.role, 'admin', 'manager', 'tl', 'employee'), u.name`,
   );
 }

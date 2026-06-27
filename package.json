@@ -9,6 +9,7 @@
     "db:migrate": "node db/migrate.mjs",
     "db:migrate:groups": "node db/migrate-groups.mjs",
     "db:migrate:data-tables": "node db/migrate-data-tables.mjs",
+    "db:migrate:attendance": "node db/migrate-attendance.mjs",
     "db:seed": "node db/seed.mjs",
     "db:reset": "node db/migrate.mjs && node db/seed.mjs"
   },
@@ -18,6 +19,7 @@
     "date-fns": "^3.6.0",
     "jose": "^5.9.6",
     "jssip": "^3.10.1",
+    "lucide-react": "^1.21.0",
     "mysql2": "^3.22.3",
     "next": "14.2.5",
     "react": "^18.3.1",

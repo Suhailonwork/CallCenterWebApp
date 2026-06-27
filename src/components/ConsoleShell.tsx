@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
 import { LiveRefresh } from './LiveRefresh';
+import { AttendanceHeartbeat } from './AttendanceHeartbeat';
 
 interface NavItem {
   href: string;
@@ -34,6 +35,7 @@ export function ConsoleShell({
   return (
     <div className="flex min-h-screen">
       <LiveRefresh scopes={['calls', 'breaks']} />
+      <AttendanceHeartbeat />
       <aside className="flex w-56 shrink-0 flex-col bg-slate-900 text-slate-300">
         <div className="flex items-center gap-2 px-5 py-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">

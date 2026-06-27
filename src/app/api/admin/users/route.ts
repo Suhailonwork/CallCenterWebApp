@@ -27,6 +27,7 @@ const createSchema = z.object({
   password: z.string().min(8).max(100),
   role: z.enum(['admin', 'manager', 'tl', 'employee']),
   teamId: z.number().int().positive().nullable().optional(),
+  shiftId: z.number().int().positive().nullable().optional(),
 });
 
 /** POST /api/admin/users - create an account. */
@@ -67,9 +68,9 @@ export async function POST(req: Request) {
   try {
     await conn.beginTransaction();
     const [res]: any = await conn.execute(
-      `INSERT INTO users (name, email, password_hash, role, team_id, reports_to)
-       VALUES (?,?,?,?,?,?)`,
-      [d.name, d.email, hash, d.role, teamId, reportsTo],
+      `INSERT INTO users (name, email, password_hash, role, team_id, shift_id, reports_to)
+       VALUES (?,?,?,?,?,?,?)`,
+      [d.name, d.email, hash, d.role, teamId, d.shiftId ?? null, reportsTo],
     );
     const newId = res.insertId;
 

@@ -4,8 +4,9 @@ import { verifyPassword } from '@/lib/password';
 import { signToken, TOKEN_COOKIE } from '@/lib/jwt';
 import { ROLE_HOME } from '@/lib/rbac';
 import { ok, fail } from '@/lib/api';
-import { logAudit } from '@/lib/audit';
+import { logAudit, clientIp } from '@/lib/audit';
 import { openSession } from '@/lib/sessions';
+import { recordLogin } from '@/lib/attendance';
 import type { Role } from '@/types';
 
 export const runtime = 'nodejs';
@@ -50,6 +51,14 @@ export async function POST(req: Request) {
   if (user.role === 'employee') {
     await openSession(user.id);
   }
+
+  // Attendance & login tracking — records every login for every role.
+  await recordLogin({
+    userId: user.id,
+    role: user.role,
+    ip: clientIp(),
+    userAgent: req.headers.get('user-agent'),
+  });
 
   await logAudit({ userId: user.id, action: 'login', entity: 'users', entityId: user.id });
 

@@ -23,7 +23,7 @@ export default async function AdminLayout({
         { href: '/admin/data-tables', label: 'Data Tables' },
         { href: '/admin/gateways', label: 'GSM Gateways' },
         { href: '/admin/reports', label: 'Reports' },
-        { href: '/admin/settings', label: 'Settings' },
+        { href: '/admin/logins', label: 'Logins' },
         { href: '/admin/audit', label: 'Audit Log' },
       ]}
     >

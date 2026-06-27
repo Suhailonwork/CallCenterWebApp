@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
-import type { AdminUser, TeamSummary, Role } from '@/types';
+import type { AdminUser, TeamSummary, Role, Shift } from '@/types';
 
 const ROLES: Role[] = ['manager', 'tl', 'employee', 'admin'];
 const ROLE_BADGE: Record<string, string> = {
@@ -15,6 +15,7 @@ const ROLE_BADGE: Record<string, string> = {
 export function UserManager() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [teams, setTeams] = useState<TeamSummary[]>([]);
+  const [shifts, setShifts] = useState<Shift[]>([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState<'create' | AdminUser | null>(null);
   const [saving, setSaving] = useState(false);
@@ -24,19 +25,27 @@ export function UserManager() {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>('employee');
   const [teamId, setTeamId] = useState(0);
+  const [shiftId, setShiftId] = useState(0);
 
   const editUser = modal && modal !== 'create' ? modal : null;
 
   async function load() {
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/users');
+      const [res, shiftRes] = await Promise.all([
+        fetch('/api/admin/users'),
+        fetch('/api/admin/shifts'),
+      ]);
       const data = await res.json();
       if (res.ok) {
         setUsers(data.users);
         setTeams(data.teams);
       } else {
         toast.error(data.error ?? 'Failed to load users');
+      }
+      if (shiftRes.ok) {
+        const sd = await shiftRes.json();
+        setShifts(sd.shifts ?? []);
       }
     } finally {
       setLoading(false);
@@ -52,6 +61,7 @@ export function UserManager() {
     setPassword('');
     setRole('employee');
     setTeamId(0);
+    setShiftId(0);
     setModal('create');
   }
 
@@ -61,6 +71,7 @@ export function UserManager() {
     setPassword('');
     setRole(u.role);
     setTeamId(u.team_id ?? 0);
+    setShiftId(u.shift_id ?? 0);
     setModal(u);
   }
 
@@ -68,6 +79,7 @@ export function UserManager() {
     setSaving(true);
     try {
       const needsTeam = role === 'employee' || role === 'tl';
+      const shiftValue = needsTeam && shiftId > 0 ? shiftId : null;
       let res: Response;
       if (editUser) {
         res = await fetch(`/api/admin/users/${editUser.id}`, {
@@ -76,6 +88,7 @@ export function UserManager() {
           body: JSON.stringify({
             name,
             teamId: needsTeam && teamId > 0 ? teamId : null,
+            shiftId: shiftValue,
             password: password || undefined,
           }),
         });
@@ -89,6 +102,7 @@ export function UserManager() {
             password,
             role,
             teamId: needsTeam && teamId > 0 ? teamId : null,
+            shiftId: shiftValue,
           }),
         });
       }
@@ -156,6 +170,7 @@ export function UserManager() {
                   <th className="pb-2">Email</th>
                   <th className="pb-2">Role</th>
                   <th className="pb-2">Team</th>
+                  <th className="pb-2">Shift</th>
                   <th className="pb-2">Status</th>
                   <th className="pb-2 text-right">Actions</th>
                 </tr>
@@ -176,6 +191,7 @@ export function UserManager() {
                       </span>
                     </td>
                     <td className="py-2 text-slate-500">{u.team_name ?? '—'}</td>
+                    <td className="py-2 text-slate-500">{u.shift_name ?? '—'}</td>
                     <td className="py-2">
                       <span
                         className={
@@ -277,6 +293,24 @@ export function UserManager() {
                       {t.name}
                     </option>
                   ))}
+                </select>
+
+                <label className="mt-3 block text-sm font-medium text-slate-700">
+                  Shift
+                </label>
+                <select
+                  value={shiftId}
+                  onChange={(e) => setShiftId(Number(e.target.value))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  <option value={0}>No shift</option>
+                  {shifts
+                    .filter((s) => s.is_active || s.id === shiftId)
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} ({s.start_time}–{s.end_time})
+                      </option>
+                    ))}
                 </select>
               </>
             )}

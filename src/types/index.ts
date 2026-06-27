@@ -85,6 +85,8 @@ export interface AdminUser {
   role: Role;
   team_id: number | null;
   team_name: string | null;
+  shift_id: number | null;
+  shift_name: string | null;
   reports_to: number | null;
   is_active: number;
   created_at: string;
@@ -184,6 +186,109 @@ export interface AuditRow {
 export interface AppSetting {
   key: string;
   value: string;
+}
+
+// ---- Attendance & Login Tracking ----
+
+export interface Shift {
+  id: number;
+  name: string;
+  start_time: string; // HH:MM
+  end_time: string;   // HH:MM
+  grace_minutes: number;
+  working_hours: number | null;
+  is_active: number;
+  assigned_count?: number;
+  created_at?: string;
+}
+
+export type AttendanceStatus = 'on_time' | 'grace' | 'late';
+
+export interface AttendanceBoardRow {
+  userId: number;
+  name: string;
+  email: string;
+  role: Role;
+  tlName: string | null;
+  shiftName: string | null;
+  shiftStart: string | null;
+  present: boolean;
+  online: boolean;
+  status: AttendanceStatus | null;
+  firstLogin: string | null;
+  lastLogout: string | null;
+  totalSeconds: number;
+  sessions: number;
+}
+
+export interface AttendanceSessionRow {
+  id: number;
+  userId: number;
+  userName: string;
+  email: string;
+  role: Role;
+  tlName: string | null;
+  shiftName: string | null;
+  workDate: string;
+  loginAt: string;
+  logoutAt: string | null;
+  durationSeconds: number;
+  status: AttendanceStatus | null;
+  lateSeconds: number;
+  logoutReason: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  online: boolean;
+}
+
+export interface AttendanceSummary {
+  totalUsers: number;
+  present: number;
+  absent: number;
+  loggedIn: number;
+  loggedOut: number;
+  onTime: number;
+  grace: number;
+  late: number;
+  totalWorkSeconds: number;
+}
+
+export interface AttendanceResponse {
+  board: AttendanceBoardRow[];
+  summary: AttendanceSummary;
+  rows: AttendanceSessionRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  from: string;
+  to: string;
+  preset: string;
+  tls: { id: number; name: string }[];
+}
+
+export interface EmployeeAttendanceData {
+  today: {
+    firstLogin: string | null;
+    lastLogout: string | null;
+    totalSeconds: number;
+    online: boolean;
+    status: AttendanceStatus | null;
+  };
+  shift: { name: string | null; start: string | null };
+  counts: { onTime: number; grace: number; late: number };
+  history: {
+    id: number;
+    workDate: string;
+    loginAt: string;
+    logoutAt: string | null;
+    durationSeconds: number;
+    status: AttendanceStatus | null;
+    lateSeconds: number;
+    shiftName: string | null;
+    online: boolean;
+  }[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
 }
 
 // ---- Groups module (group-based campaign management) ----

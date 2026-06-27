@@ -9,6 +9,7 @@ export const runtime = 'nodejs';
 const patchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   teamId: z.number().int().positive().nullable().optional(),
+  shiftId: z.number().int().positive().nullable().optional(),
   isActive: z.boolean().optional(),
   password: z.string().min(8).max(100).optional(),
 });
@@ -44,6 +45,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (d.password) {
     sets.push('password_hash = ?');
     vals.push(await hashPassword(d.password));
+  }
+  if (d.shiftId !== undefined) {
+    sets.push('shift_id = ?');
+    vals.push(d.shiftId);
   }
   if (d.teamId !== undefined) {
     sets.push('team_id = ?');
