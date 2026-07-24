@@ -1,18 +1,28 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { pool } from '@/lib/db';
+import { pool, query } from '@/lib/db';
 import { agentCanAccessCampaign } from '@/lib/groups';
+import {
+  parseDialStatuses,
+  parseRecycleRules,
+  buildClaimSelect,
+} from '@/lib/dialEligibility';
 
 export const runtime = 'nodejs';
 
-// A claimed-but-never-dialed contact is re-offered after this many minutes
+// A claimed-but-never-dialed contact is re-offered after this many seconds
 // (covers an agent who closed the tab before placing the call).
-const CLAIM_TIMEOUT_MIN = 2;
+const CLAIM_TIMEOUT_SEC = 120;
 
 /**
  * GET /api/employee/dialer/next?campaignId=N
- * Returns the next un-called contact (FIFO) and atomically *claims* it inside a
+ * Returns the next dialable lead (FIFO) and atomically *claims* it inside a
  * transaction (SELECT ... FOR UPDATE), so two agents on the same campaign can
- * never be handed the same contact.
+ * never be handed the same lead.
+ *
+ * Eligibility is VICIdial-style and IDENTICAL to the predictive engine's
+ * claim (shared builder in src/lib/dialEligibility.js): the lead must sit in
+ * an ACTIVE list and either be fresh (called=0 + status in dial_statuses) or
+ * match one of the campaign's recycle rules.
  */
 export async function GET(req: Request) {
   const user = await authenticate(['employee']);
@@ -28,31 +38,47 @@ export async function GET(req: Request) {
     return fail('You are not assigned to this campaign', 403);
   }
 
+  // Campaign rules + active lists, read fresh so a list toggled OFF stops
+  // handing out its leads immediately.
+  const camp = await query<{ dial_statuses: unknown; recycle_rules: unknown }>(
+    'SELECT dial_statuses, recycle_rules FROM campaigns WHERE id = ?',
+    [campaignId],
+  );
+  if (!camp[0]) return fail('Campaign not found', 404);
+  const lists = await query<{ id: number }>(
+    "SELECT id FROM lists WHERE campaign_id = ? AND active = 'Y'",
+    [campaignId],
+  );
+  if (lists.length === 0) return ok({ contact: null });
+
+  const claim = buildClaimSelect({
+    campaignId,
+    listIds: lists.map((l) => l.id),
+    dialStatuses: parseDialStatuses(camp[0].dial_statuses),
+    recycleRules: parseRecycleRules(camp[0].recycle_rules),
+    claimTimeoutSec: CLAIM_TIMEOUT_SEC,
+  });
+  if (!claim) return ok({ contact: null });
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    const [rows]: any = await conn.execute(
-      `SELECT id, phone_number, name, email, company, custom_fields
-         FROM csv_data
-        WHERE campaign_id = ?
-          AND called = 0
-          AND (claimed_at IS NULL OR claimed_at < DATE_SUB(NOW(), INTERVAL ? MINUTE))
-        ORDER BY id ASC
-        LIMIT 1
-        FOR UPDATE`,
-      [campaignId, CLAIM_TIMEOUT_MIN],
-    );
-
+    const [rows]: any = await conn.execute(claim.sql, claim.params);
     const contact = rows[0];
     if (!contact) {
       await conn.commit();
       return ok({ contact: null });
     }
 
+    // This route hands the lead straight to the agent to dial, so a
+    // recycle-branch claim consumes one recycle attempt here.
     await conn.execute(
-      'UPDATE csv_data SET claimed_at = NOW(), assigned_to = ? WHERE id = ?',
-      [user.id, contact.id],
+      `UPDATE csv_data
+          SET claimed_at = NOW(), assigned_to = ?,
+              recycle_attempts = recycle_attempts + ?
+        WHERE id = ?`,
+      [user.id, Number(contact.via_recycle) === 1 ? 1 : 0, contact.id],
     );
     await conn.commit();
     return ok({ contact });

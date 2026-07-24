@@ -25,6 +25,11 @@
 "use strict";
 
 const mysql = require("mysql2/promise");
+const {
+  parseDialStatuses,
+  parseRecycleRules,
+  buildClaimSelect,
+} = require("./src/lib/dialEligibility.js");
 
 /**
  * @param io     Socket.IO server (server.mjs se)
@@ -154,23 +159,50 @@ module.exports = function startPredictiveEngine({ io, agents, ari }) {
     return rows[0] || null;
   }
 
-  // agla un-called contact claim karo (FIFO + lock). Claim timeout is
-  // configurable; an unfinished claim is re-offered after claimTimeoutSec.
+  // agla dialable lead claim karo (FIFO + lock). VICIdial-style eligibility:
+  // lead must sit in an ACTIVE list of the campaign, and either be fresh
+  // (called=0 + status in dial_statuses) or match a recycle rule (see
+  // src/lib/dialEligibility.js — shared with /api/employee/dialer/next).
+  // Claim timeout is configurable; an unfinished claim is re-offered after
+  // claimTimeoutSec. Returned contact carries via_recycle (0/1).
   async function claimNextContact(campaignId, agentId) {
+    // Rules + active lists are read fresh on every claim, so toggling a
+    // list OFF (active='N') stops new claims on the very next tick.
+    let claim;
+    try {
+      const [campRows] = await db.query(
+        "SELECT dial_statuses, recycle_rules FROM campaigns WHERE id = ?",
+        [campaignId],
+      );
+      if (!campRows[0]) return null;
+      const [listRows] = await db.query(
+        "SELECT id FROM lists WHERE campaign_id = ? AND active = 'Y'",
+        [campaignId],
+      );
+      if (listRows.length === 0) {
+        console.log(`[PREDICTIVE] Campaign=${campaignId} Reason=NoActiveLists`);
+        return null;
+      }
+      claim = buildClaimSelect({
+        campaignId,
+        listIds: listRows.map((l) => l.id),
+        dialStatuses: parseDialStatuses(campRows[0].dial_statuses),
+        recycleRules: parseRecycleRules(campRows[0].recycle_rules),
+        claimTimeoutSec: cfg.claimTimeoutSec,
+      });
+      if (!claim) {
+        console.log(`[PREDICTIVE] Campaign=${campaignId} Reason=NoDialableStatuses`);
+        return null;
+      }
+    } catch (e) {
+      console.error("[engine] claim prep failed:", e && e.message);
+      return null;
+    }
+
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-      const [rows] = await conn.execute(
-        `SELECT id, phone_number, name, email, company, custom_fields
-           FROM csv_data
-          WHERE campaign_id = ? AND called = 0
-            AND (claimed_at IS NULL
-                 OR claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND))
-          ORDER BY id ASC
-          LIMIT 1
-          FOR UPDATE`,
-        [campaignId, cfg.claimTimeoutSec],
-      );
+      const [rows] = await conn.execute(claim.sql, claim.params);
       const c = rows[0];
       if (!c) {
         await conn.commit();
@@ -188,6 +220,25 @@ module.exports = function startPredictiveEngine({ io, agents, ari }) {
       return null;
     } finally {
       conn.release();
+    }
+  }
+
+  // Ek dial attempt ko DB me stamp karo (originate accepted by ARI).
+  // called=1 -> the lead will not re-offer via the normal branch until a
+  // list RESET; recycle_attempts counts only branch-b (recycle) claims.
+  async function markDialed(csvId, viaRecycle) {
+    try {
+      await db.query(
+        `UPDATE csv_data
+            SET called = 1,
+                call_count = call_count + 1,
+                last_call_at = NOW(),
+                recycle_attempts = recycle_attempts + ?
+          WHERE id = ?`,
+        [viaRecycle ? 1 : 0, csvId],
+      );
+    } catch (e) {
+      console.error("[engine] markDialed failed:", e && e.message);
     }
   }
 
@@ -261,9 +312,12 @@ module.exports = function startPredictiveEngine({ io, agents, ari }) {
         contact,
         gateway: gw.endpoint,
       });
+      // Attempt is live: stamp the dial (called=1, call_count+1, last_call_at).
+      await markDialed(contact.id, Number(contact.via_recycle) === 1);
       console.log(
         `[PREDICTIVE] Dialing agent=${agent.id} ext=${agent.extension} csv=${contact.id} ` +
-          `phone=${phone} gw=${gw.name}(${gw.endpoint})`,
+          `phone=${phone} gw=${gw.name}(${gw.endpoint})` +
+          (Number(contact.via_recycle) === 1 ? " (recycle)" : ""),
       );
       return true;
       // aage ari-app handle karega: answer -> onConnect, fail/end -> onFailed
@@ -413,9 +467,24 @@ module.exports = function startPredictiveEngine({ io, agents, ari }) {
     io.to("agent:" + agentId).emit("assigned-call", contact);
   }
 
-  // No answer / busy / ended-before-connect -> release reservation, start cooldown.
-  function onFailed(agentId /*, contact, cause */) {
+  // No answer / busy / ended-before-connect -> release reservation, start
+  // cooldown, and stamp the failed attempt's status on the lead so recycle
+  // rules can pick it up ("no-answer" -> no_answer, drops -> failed).
+  // recycle_attempts resets when the status CHANGES (VICIdial behavior);
+  // `called = 1` guard: only leads whose dial was stamped by markDialed.
+  function onFailed(agentId, contact, cause) {
+    const r = reservations.get(agentId);
+    const csvId = (contact && contact.id) || (r && r.csvId) || null;
     releaseReservation(agentId, "failed/no-answer");
+    if (!csvId) return;
+    const status = cause === "no-answer" ? "no_answer" : "failed";
+    db.query(
+      `UPDATE csv_data
+          SET recycle_attempts = IF(call_status = ?, recycle_attempts, 0),
+              call_status = ?
+        WHERE id = ? AND called = 1`,
+      [status, status, csvId],
+    ).catch((e) => console.error("[engine] onFailed status write failed:", e && e.message));
   }
 
   return {

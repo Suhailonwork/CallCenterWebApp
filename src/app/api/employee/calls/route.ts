@@ -94,9 +94,20 @@ export async function POST(req: Request) {
     );
 
     if (d.csvDataId) {
+      // Lead status write. Assignment order matters (MySQL applies SET left
+      // to right): call_count/last_call_at read the PRE-update `called` so a
+      // predictive dial already stamped by the engine is not double-counted,
+      // and recycle_attempts reads the PRE-update call_status so attempts
+      // reset only when the status actually CHANGES (VICIdial behavior).
       await conn.execute(
-        "UPDATE csv_data SET called = 1, call_status = ? WHERE id = ?",
-        [d.status, d.csvDataId],
+        `UPDATE csv_data
+            SET call_count = call_count + IF(called = 1, 0, 1),
+                last_call_at = IF(called = 1, last_call_at, NOW()),
+                recycle_attempts = IF(call_status = ?, recycle_attempts, 0),
+                called = 1,
+                call_status = ?
+          WHERE id = ?`,
+        [d.status, d.status, d.csvDataId],
       );
     }
 
