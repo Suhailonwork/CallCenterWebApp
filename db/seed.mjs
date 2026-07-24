@@ -51,7 +51,7 @@ const hash = await bcrypt.hash(PASSWORD, 10);
 for (const t of [
   'agent_sessions', 'campaign_assignments', 'settings', 'audit_logs',
   'performance', 'breaks', 'scheduled_calls', 'call_notes', 'calls',
-  'csv_data', 'campaigns', 'employees', 'teams',
+  'csv_data', 'lists', 'campaigns', 'employees', 'teams',
 ]) {
   await db.execute(`DELETE FROM ${t}`);
 }
@@ -137,6 +137,13 @@ const [camp] = await db.execute(
 );
 const campaignId = camp.insertId;
 
+// Every lead belongs to a list; the demo campaign gets one active Default List.
+const [seedList] = await db.execute(
+  `INSERT INTO lists (name, description, campaign_id, active) VALUES (?,?,?,'Y')`,
+  ['Default List', 'Demo leads for Spring Outreach 2026', campaignId],
+);
+const listId = seedList.insertId;
+
 const contacts = [
   ['9818435920', 'Rohan Sharma', 'rohan@acme.example', 'Acme Corp'],
   ['9810012345', 'Priya Verma', 'priya@globex.example', 'Globex'],
@@ -151,8 +158,8 @@ const contacts = [
 ];
 for (const [phone, name, email, company] of contacts) {
   await db.execute(
-    'INSERT INTO csv_data (campaign_id, phone_number, name, email, company) VALUES (?,?,?,?,?)',
-    [campaignId, phone, name, email, company],
+    'INSERT INTO csv_data (campaign_id, list_id, phone_number, name, email, company) VALUES (?,?,?,?,?,?)',
+    [campaignId, listId, phone, name, email, company],
   );
 }
 

@@ -20,7 +20,6 @@ DROP TABLE IF EXISTS shifts;
 DROP TABLE IF EXISTS agent_sessions;
 DROP TABLE IF EXISTS campaign_gateways;
 DROP TABLE IF EXISTS gsm_gateways;
-DROP TABLE IF EXISTS data_tables;
 DROP TABLE IF EXISTS campaign_assignments;
 DROP TABLE IF EXISTS settings;
 DROP TABLE IF EXISTS audit_logs;
@@ -30,6 +29,8 @@ DROP TABLE IF EXISTS scheduled_calls;
 DROP TABLE IF EXISTS call_notes;
 DROP TABLE IF EXISTS calls;
 DROP TABLE IF EXISTS csv_data;
+DROP TABLE IF EXISTS lists;
+DROP TABLE IF EXISTS data_tables;
 DROP TABLE IF EXISTS campaigns;
 DROP TABLE IF EXISTS group_agents;
 DROP TABLE IF EXISTS group_tl;
@@ -122,7 +123,7 @@ CREATE TABLE group_agents (
   INDEX idx_ga_agent (agent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- campaigns: a calling campaign (auto-dialer source) ----
+-- ---- campaigns: a calling campaign (RULES only — leads live in lists) ----
 CREATE TABLE campaigns (
   id                  INT AUTO_INCREMENT PRIMARY KEY,
   name                VARCHAR(150) NOT NULL,
@@ -137,6 +138,8 @@ CREATE TABLE campaigns (
   calling_end         TIME NULL,
   retry_count         INT NOT NULL DEFAULT 0,
   retry_delay_minutes INT NOT NULL DEFAULT 60,
+  dial_statuses       JSON NULL COMMENT 'Lead statuses the dialer may claim (JSON array); NULL = default NEW/no_answer/busy',
+  recycle_rules       JSON NULL COMMENT 'Auto-retry rules: [{status, delay_min, max_attempts}]; NULL/[] = no recycling',
   created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_campaigns_creator FOREIGN KEY (created_by) REFERENCES users(id)    ON DELETE SET NULL,
   CONSTRAINT fk_campaigns_group   FOREIGN KEY (group_id)   REFERENCES `groups`(id) ON DELETE SET NULL,
@@ -144,24 +147,63 @@ CREATE TABLE campaigns (
   INDEX idx_campaigns_group (group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ---- csv_data: uploaded contacts belonging to a campaign ----
+-- ---- data_tables: reusable, ordered column-name sets for CSV uploads ----
+-- A list (or, legacy, a campaign) may reference one data_table; on CSV upload
+-- only that table's columns (in order) are stored into csv_data.custom_fields.
+-- No per-table SQL tables are ever created — the actual cell values live in
+-- the existing JSON column. (Defined before lists/csv_data for the FKs.)
+CREATE TABLE data_tables (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  name       VARCHAR(120) NOT NULL,
+  columns    JSON NOT NULL COMMENT 'Ordered array of column names',
+  created_by INT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_data_tables_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- lists: a data container of leads, owned by one campaign ----
+-- VICIdial-style: campaign = rules, list = data with an ON/OFF switch.
+-- The dialer only claims leads from lists with active='Y'.
+CREATE TABLE lists (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  name        VARCHAR(150) NOT NULL,
+  description VARCHAR(500) NULL,
+  campaign_id INT NOT NULL,
+  active      ENUM('Y','N') NOT NULL DEFAULT 'N',
+  template_id INT NULL COMMENT 'Data Template (data_tables.id) applied to CSV uploads into this list',
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_lists_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id)   ON DELETE CASCADE,
+  CONSTRAINT fk_lists_template FOREIGN KEY (template_id) REFERENCES data_tables(id) ON DELETE SET NULL,
+  INDEX idx_lists_campaign_active (campaign_id, active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---- csv_data: uploaded leads; every lead belongs to a list ----
+-- campaign_id is kept in sync with the list's campaign (denormalized for the
+-- claim hot path and for legacy queries).
 CREATE TABLE csv_data (
-  id            INT AUTO_INCREMENT PRIMARY KEY,
-  campaign_id   INT NOT NULL,
-  phone_number  VARCHAR(32) NOT NULL,
-  name          VARCHAR(150) NULL,
-  email         VARCHAR(180) NULL,
-  company       VARCHAR(150) NULL,
-  custom_fields JSON NULL,
-  called        TINYINT(1) NOT NULL DEFAULT 0,
-  call_status   VARCHAR(32) NULL,
-  assigned_to   INT NULL,
-  claimed_at    DATETIME NULL,
-  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id               INT AUTO_INCREMENT PRIMARY KEY,
+  campaign_id      INT NOT NULL,
+  list_id          INT NULL,
+  phone_number     VARCHAR(32) NOT NULL,
+  name             VARCHAR(150) NULL,
+  email            VARCHAR(180) NULL,
+  company          VARCHAR(150) NULL,
+  custom_fields    JSON NULL,
+  called           TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'called_since_last_reset: 1 after a dial, back to 0 on list RESET',
+  call_status      VARCHAR(32) NOT NULL DEFAULT 'NEW' COMMENT 'Lead status: NEW = never dialed, else last disposition',
+  call_count       INT NOT NULL DEFAULT 0,
+  last_call_at     DATETIME NULL,
+  recycle_attempts INT NOT NULL DEFAULT 0,
+  assigned_to      INT NULL,
+  claimed_at       DATETIME NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_csv_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+  CONSTRAINT fk_csv_list     FOREIGN KEY (list_id)     REFERENCES lists(id)     ON DELETE CASCADE,
   CONSTRAINT fk_csv_assigned FOREIGN KEY (assigned_to) REFERENCES users(id)     ON DELETE SET NULL,
-  -- Hot path: the auto-dialer claims "the next un-called contact for a campaign".
+  -- Hot path: the auto-dialer claims "the next dialable lead in an active list".
   INDEX idx_csv_campaign_called (campaign_id, called),
+  INDEX idx_csv_list_called (list_id, called),
   INDEX idx_csv_assigned (assigned_to)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -285,19 +327,6 @@ CREATE TABLE campaign_assignments (
   CONSTRAINT fk_ca_employee FOREIGN KEY (employee_id) REFERENCES users(id)     ON DELETE CASCADE,
   CONSTRAINT fk_ca_assigner FOREIGN KEY (assigned_by) REFERENCES users(id)     ON DELETE SET NULL,
   INDEX idx_ca_employee (employee_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ---- data_tables: reusable, ordered column-name sets for campaign CSV uploads ----
--- A campaign may reference one data_table; on CSV upload only that table's
--- columns (in order) are stored into csv_data.custom_fields. No per-table SQL
--- tables are ever created — the actual cell values live in the existing JSON column.
-CREATE TABLE data_tables (
-  id         INT AUTO_INCREMENT PRIMARY KEY,
-  name       VARCHAR(120) NOT NULL,
-  columns    JSON NOT NULL COMMENT 'Ordered array of column names',
-  created_by INT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_data_tables_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---- gsm_gateways: physical GSM/VoIP gateway devices ----
