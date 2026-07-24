@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "react-toastify";
 import type { CampaignRow, DataTable, ListRow } from "@/types";
 
@@ -40,6 +40,8 @@ export function ListsManager() {
     dialableAfter: number;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  // Guards a slow reset-preview fetch from populating a different list's dialog.
+  const resetReq = useRef(0);
 
   async function load() {
     setLoading(true);
@@ -55,7 +57,10 @@ export function ListsManager() {
       if (listRes.ok) setLists(listData.lists ?? []);
       else toast.error(listData.error ?? "Failed to load lists");
       if (campRes.ok) setCampaigns(campData.campaigns ?? []);
+      else toast.error(campData.error ?? "Failed to load campaigns");
       if (dtRes.ok) setDataTables(dtData.dataTables ?? []);
+    } catch {
+      toast.error("Failed to load lists");
     } finally {
       setLoading(false);
     }
@@ -156,10 +161,13 @@ export function ListsManager() {
   }
 
   async function openReset(l: ListRow) {
+    const seq = ++resetReq.current;
     setResetFor(l);
     setResetPreview(null);
     const res = await fetch(`/api/admin/lists/${l.id}/reset`);
     const data = await res.json().catch(() => ({}));
+    // Drop a response the user has already navigated away from.
+    if (seq !== resetReq.current) return;
     if (res.ok) setResetPreview(data);
     else toast.error(data.error ?? "Failed to load reset preview");
   }
@@ -448,6 +456,13 @@ export function ListsManager() {
               }
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             >
+              {/* Fallback so the current campaign is always visible even if the
+                  campaigns list failed to load. */}
+              {!campaigns.some((c) => c.id === editFor.campaign_id) && (
+                <option value={editFor.campaign_id}>
+                  {editFor.campaign_name ?? `Campaign #${editFor.campaign_id}`}
+                </option>
+              )}
               {campaigns.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}

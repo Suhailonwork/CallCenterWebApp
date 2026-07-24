@@ -469,20 +469,28 @@ module.exports = function startPredictiveEngine({ io, agents, ari }) {
 
   // No answer / busy / ended-before-connect -> release reservation, start
   // cooldown, and stamp the failed attempt's status on the lead so recycle
-  // rules can pick it up ("no-answer" -> no_answer, drops -> failed).
-  // recycle_attempts resets when the status CHANGES (VICIdial behavior);
-  // `called = 1` guard: only leads whose dial was stamped by markDialed.
+  // rules can pick it up. Drops (customer answered, no agent bridged:
+  // "ended-before-agent-connect" / "agent-unavailable") map to no_answer so
+  // the default recycle rules retry them — they are the hottest redials.
+  // recycle_attempts resets when the status CHANGES (VICIdial behavior).
+  // The write also sets called=1 itself: an instant gateway rejection can
+  // fire this BEFORE markDialed's UPDATE lands, and a status write that
+  // no-oped there would strand the lead as called=1/'NEW' until a RESET.
   function onFailed(agentId, contact, cause) {
     const r = reservations.get(agentId);
     const csvId = (contact && contact.id) || (r && r.csvId) || null;
     releaseReservation(agentId, "failed/no-answer");
     if (!csvId) return;
-    const status = cause === "no-answer" ? "no_answer" : "failed";
+    const status =
+      cause === "no-answer" || cause === "ended-before-agent-connect" || cause === "agent-unavailable"
+        ? "no_answer"
+        : "failed";
     db.query(
       `UPDATE csv_data
           SET recycle_attempts = IF(call_status = ?, recycle_attempts, 0),
-              call_status = ?
-        WHERE id = ? AND called = 1`,
+              call_status = ?,
+              called = 1
+        WHERE id = ?`,
       [status, status, csvId],
     ).catch((e) => console.error("[engine] onFailed status write failed:", e && e.message));
   }

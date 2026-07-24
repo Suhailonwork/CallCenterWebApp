@@ -40,6 +40,21 @@ export async function POST(req: Request) {
     return fail("You are not assigned to this campaign", 403);
   }
 
+  // RBAC: the lead being updated must also be one the agent can work — an
+  // arbitrary csvDataId must not let an agent rewrite another campaign's lead.
+  if (d.csvDataId != null) {
+    const [leadRows]: any = await pool.execute(
+      "SELECT campaign_id, assigned_to FROM csv_data WHERE id = ?",
+      [d.csvDataId],
+    );
+    const lead = leadRows[0];
+    if (!lead) return fail("Contact not found", 404);
+    const allowed =
+      lead.assigned_to === user.id ||
+      (await agentCanAccessCampaign(user.id, lead.campaign_id));
+    if (!allowed) return fail("You are not assigned to this contact's campaign", 403);
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -95,14 +110,17 @@ export async function POST(req: Request) {
 
     if (d.csvDataId) {
       // Lead status write. Assignment order matters (MySQL applies SET left
-      // to right): call_count/last_call_at read the PRE-update `called` so a
-      // predictive dial already stamped by the engine is not double-counted,
-      // and recycle_attempts reads the PRE-update call_status so attempts
-      // reset only when the status actually CHANGES (VICIdial behavior).
+      // to right): call_count reads the PRE-update `called` so a dial
+      // already stamped at claim/originate time (engine markDialed or
+      // /dialer/next) is not double-counted, and recycle_attempts reads the
+      // PRE-update call_status so attempts reset only when the status
+      // actually CHANGES (VICIdial behavior). last_call_at always advances
+      // to the attempt's end so recycle delay_min is measured from the
+      // latest attempt, never a stale one.
       await conn.execute(
         `UPDATE csv_data
             SET call_count = call_count + IF(called = 1, 0, 1),
-                last_call_at = IF(called = 1, last_call_at, NOW()),
+                last_call_at = NOW(),
                 recycle_attempts = IF(call_status = ?, recycle_attempts, 0),
                 called = 1,
                 call_status = ?

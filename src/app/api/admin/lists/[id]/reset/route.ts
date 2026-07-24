@@ -10,7 +10,16 @@ export const runtime = 'nodejs';
  * A list RESET makes every lead fresh again (called_since_last_reset='N')
  * WITHOUT touching statuses — VICIdial semantics. Whether a lead is then
  * dialable still depends on its status being in campaign.dial_statuses.
+ *
+ * Leads with a LIVE claim (claimed_at within the claim timeout — a call may
+ * be in flight right now) are skipped, so an in-progress attempt is neither
+ * double-counted nor instantly re-dialed to a customer already on a call.
  */
+const LIVE_CLAIM_SEC = 120; // matches the engine's dialer_claim_timeout_sec default
+
+const NOT_LIVE_CLAIMED =
+  '(claimed_at IS NULL OR claimed_at < DATE_SUB(NOW(), INTERVAL ' + LIVE_CLAIM_SEC + ' SECOND))';
+
 async function resetPreview(listId: number, campaignId: number) {
   const camp = await queryOne<{ dial_statuses: unknown }>(
     'SELECT dial_statuses FROM campaigns WHERE id = ?',
@@ -18,7 +27,9 @@ async function resetPreview(listId: number, campaignId: number) {
   );
   const dialStatuses = parseDialStatuses(camp?.dial_statuses);
   const totals = await queryOne<{ total: number; called: number }>(
-    'SELECT COUNT(*) AS total, COALESCE(SUM(called = 1), 0) AS called FROM csv_data WHERE list_id = ?',
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(called = 1 AND ${NOT_LIVE_CLAIMED}), 0) AS called
+       FROM csv_data WHERE list_id = ?`,
     [listId],
   );
   let dialableAfter = 0;
@@ -67,7 +78,8 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   const preview = await resetPreview(listId, list.campaign_id);
   await pool.execute(
-    'UPDATE csv_data SET called = 0, recycle_attempts = 0 WHERE list_id = ?',
+    `UPDATE csv_data SET called = 0, recycle_attempts = 0
+      WHERE list_id = ? AND ${NOT_LIVE_CLAIMED}`,
     [listId],
   );
   await logAudit({

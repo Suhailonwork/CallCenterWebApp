@@ -156,9 +156,12 @@ export async function POST(req: Request) {
 
     await conn.commit();
     return ok({ id: campaignId }, 201);
-  } catch (e) {
+  } catch (e: any) {
     await conn.rollback();
     console.error('[tl/campaigns] create failed:', e);
+    if (e?.code === 'ER_NO_SUCH_TABLE' || e?.code === 'ER_BAD_FIELD_ERROR') {
+      return fail('Database not migrated — run npm run db:migrate:lists first', 503);
+    }
     return fail('Failed to create campaign', 500);
   } finally {
     conn.release();

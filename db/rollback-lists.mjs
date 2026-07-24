@@ -68,10 +68,25 @@ async function fkExists(table, fk) {
   return Number(rows[0].c) > 0;
 }
 
-// csv_data: drop the lists-era columns (FK first).
+async function indexExists(table, index) {
+  const [rows] = await conn.query(
+    `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+    [DB_NAME, table, index],
+  );
+  return Number(rows[0].c) > 0;
+}
+
+// csv_data: drop the lists-era columns (FK and index first — dropping the
+// column alone would leave idx_csv_list_called behind as an index on
+// (called) only, and a later re-migration would then skip recreating it).
 if (await fkExists('csv_data', 'fk_csv_list')) {
   await conn.query(`ALTER TABLE csv_data DROP FOREIGN KEY fk_csv_list`);
   console.log('OK  csv_data.fk_csv_list dropped');
+}
+if (await indexExists('csv_data', 'idx_csv_list_called')) {
+  await conn.query(`ALTER TABLE csv_data DROP INDEX idx_csv_list_called`);
+  console.log('OK  csv_data idx_csv_list_called index dropped');
 }
 for (const col of ['list_id', 'call_count', 'last_call_at', 'recycle_attempts']) {
   if (await columnExists('csv_data', col)) {

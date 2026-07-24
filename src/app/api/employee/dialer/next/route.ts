@@ -71,11 +71,16 @@ export async function GET(req: Request) {
       return ok({ contact: null });
     }
 
-    // This route hands the lead straight to the agent to dial, so a
-    // recycle-branch claim consumes one recycle attempt here.
+    // This route hands the lead straight to the agent to dial, so the claim
+    // IS the dial: stamp it exactly like the engine's markDialed (called=1,
+    // call_count+1, last_call_at) and consume a recycle attempt on
+    // recycle-branch claims. The disposition route then only writes the
+    // status — its counters no-op on called=1, so nothing double-counts and
+    // recycle delay_min is measured from this dial.
     await conn.execute(
       `UPDATE csv_data
           SET claimed_at = NOW(), assigned_to = ?,
+              called = 1, call_count = call_count + 1, last_call_at = NOW(),
               recycle_attempts = recycle_attempts + ?
         WHERE id = ?`,
       [user.id, Number(contact.via_recycle) === 1 ? 1 : 0, contact.id],

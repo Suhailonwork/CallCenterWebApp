@@ -47,11 +47,16 @@ A lead is claimable when **all** of:
     `max_attempts` (ignores `called` — VICIdial behavior).
 
 Single source of truth: `src/lib/dialEligibility.js` (shared CJS module).
-On every dial the engine stamps `called=1`, `call_count+1`,
-`last_call_at=NOW()`; failed attempts get `call_status` `no_answer`/`failed`
-so recycle rules can pick them up. `recycle_attempts` resets on RESET and on
-status change. Statuses **not** in `dial_statuses` (connected, wrong_number,
-…) are never re-dialed.
+On every dial the engine (and the manual `/dialer/next` claim) stamps
+`called=1`, `call_count+1`, `last_call_at=NOW()`. Unanswered attempts and
+**drops** (customer answered but no agent was free —
+`ended-before-agent-connect` / `agent-unavailable`) are written as
+`no_answer` so the default recycle rule retries them; hard failures become
+`failed`. `recycle_attempts` resets on RESET and on status change. Statuses
+**not** in `dial_statuses` (connected, wrong_number, …) are never re-dialed.
+The `onFailed` write also sets `called=1` itself, so a fast gateway
+rejection that races ahead of the dial-stamp can never strand a lead as
+`NEW`.
 
 ## Data Templates seeded (db:seed:templates)
 

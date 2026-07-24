@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS lists (
   updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_lists_campaign FOREIGN KEY (campaign_id) REFERENCES campaigns(id)   ON DELETE CASCADE,
   CONSTRAINT fk_lists_template FOREIGN KEY (template_id) REFERENCES data_tables(id) ON DELETE SET NULL,
+  -- One list name per campaign — also stops a check-then-insert race from
+  -- creating two "Default List" rows for the same campaign.
+  UNIQUE KEY uq_lists_campaign_name (campaign_id, name),
   -- Hot path: the claim query resolves "this campaign's active lists".
   INDEX idx_lists_campaign_active (campaign_id, active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -102,6 +102,21 @@ async function fkExists(table, fk) {
 await conn.query(sql);
 console.log('OK  lists table ready');
 
+// On a live DB that already had the lists table (created before the unique
+// key existed), add uq_lists_campaign_name if missing. De-dupe first so the
+// ADD cannot fail — keep the lowest id per (campaign_id, name).
+if (!(await indexExists('lists', 'uq_lists_campaign_name'))) {
+  await conn.query(
+    `DELETE l1 FROM lists l1
+       JOIN lists l2
+         ON l1.campaign_id = l2.campaign_id AND l1.name = l2.name AND l1.id > l2.id`,
+  );
+  await conn.query(
+    `ALTER TABLE lists ADD UNIQUE KEY uq_lists_campaign_name (campaign_id, name)`,
+  );
+  console.log('OK  lists.uq_lists_campaign_name unique key added');
+}
+
 // ---- 2. csv_data columns ----
 if (!(await columnExists('csv_data', 'list_id'))) {
   await conn.query(`ALTER TABLE csv_data ADD COLUMN list_id INT NULL AFTER campaign_id`);

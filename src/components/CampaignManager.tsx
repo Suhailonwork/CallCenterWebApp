@@ -1,6 +1,6 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "react-toastify";
 import type {
   CampaignRow,
@@ -134,6 +134,9 @@ export function CampaignManager({
   const [selStatuses, setSelStatuses] = useState<string[]>(DEFAULT_DIAL_STATUSES);
   const [recycleRules, setRecycleRules] = useState<RecycleRule[]>([]);
   const [rulesBusy, setRulesBusy] = useState(false);
+  // Monotonic token so a slow openUpload response can't repopulate the modal
+  // after the user has switched to a different campaign.
+  const uploadReq = useRef(0);
   const router = useRouter();
   async function load() {
     setLoading(true);
@@ -145,17 +148,19 @@ export function CampaignManager({
         fetch(`${apiBase}/groups`),
         fetch("/api/admin/data-tables"),
       ]);
-      const campData = await campRes.json();
-      const gwData = await gwRes.json();
-      const statusData = await statusRes.json();
+      const campData = await campRes.json().catch(() => ({}));
+      const gwData = await gwRes.json().catch(() => ({}));
+      const statusData = await statusRes.json().catch(() => ({}));
       const grpData = await grpRes.json().catch(() => ({}));
       const dtData = await dtRes.json().catch(() => ({}));
-      if (campRes.ok) setCampaigns(campData.campaigns);
+      if (campRes.ok) setCampaigns(campData.campaigns ?? []);
       else toast.error(campData.error ?? "Failed to load campaigns");
-      if (gwRes.ok) setAllGateways(gwData.gateways);
+      if (gwRes.ok) setAllGateways(gwData.gateways ?? []);
       if (statusRes.ok) setGwStatus(statusData.status ?? {});
       if (grpRes.ok) setGroupOptions(grpData.groups ?? []);
       if (dtRes.ok) setDataTables(dtData.dataTables ?? []);
+    } catch {
+      toast.error("Failed to load campaigns");
     } finally {
       setLoading(false);
     }
@@ -258,9 +263,16 @@ export function CampaignManager({
 
   async function saveRules() {
     if (!rulesFor) return;
+    // NaN-safe validation: `NaN < 1` is false, so guard on the positive side.
     for (const r of recycleRules) {
-      if (!r.status || r.delay_min < 1 || r.max_attempts < 1) {
-        toast.warning("Every recycle rule needs a status, delay ≥ 1 min and attempts ≥ 1");
+      if (
+        !r.status ||
+        !(Number(r.delay_min) >= 1 && Number(r.delay_min) <= 10080) ||
+        !(Number(r.max_attempts) >= 1 && Number(r.max_attempts) <= 50)
+      ) {
+        toast.warning(
+          "Every recycle rule needs a status, delay 1–10080 min and 1–50 attempts",
+        );
         return;
       }
     }
@@ -271,7 +283,12 @@ export function CampaignManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           dial_statuses: selStatuses,
-          recycle_rules: recycleRules,
+          // Coerce to plain numbers in case an input left a string/empty value.
+          recycle_rules: recycleRules.map((r) => ({
+            status: r.status,
+            delay_min: Number(r.delay_min),
+            max_attempts: Number(r.max_attempts),
+          })),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -299,6 +316,7 @@ export function CampaignManager({
   }
 
   async function openUpload(c: CampaignWithGateways) {
+    const seq = ++uploadReq.current;
     setUploadFor(c);
     setUploadFile(null);
     setDupMode("none");
@@ -308,10 +326,14 @@ export function CampaignManager({
     setUploadListId("new");
     const res = await fetch(`${apiBase}/lists?campaignId=${c.id}`);
     const data = await res.json().catch(() => ({}));
+    // Ignore a response that lost the race to a newer openUpload().
+    if (seq !== uploadReq.current) return;
     if (res.ok) {
       const lists: ListRow[] = data.lists ?? [];
       setUploadLists(lists);
       if (lists.length > 0) setUploadListId(lists[0].id);
+    } else {
+      toast.error(data.error ?? "Failed to load lists");
     }
   }
 
@@ -344,6 +366,27 @@ export function CampaignManager({
           return;
         }
         listId = data.id;
+        // Pin the modal to the list we just created and add it to the picker,
+        // so a retry after a failed upload reuses it instead of creating a
+        // second identically-named orphan list.
+        setUploadListId(data.id);
+        setUploadLists((ls) => [
+          ...ls,
+          {
+            id: data.id,
+            name: newListName.trim(),
+            description: null,
+            campaign_id: uploadFor.id,
+            campaign_name: uploadFor.name,
+            active: "Y",
+            template_id: newListTemplateId === "" ? null : Number(newListTemplateId),
+            template_name:
+              dataTables.find((dt) => dt.id === newListTemplateId)?.name ?? null,
+            created_at: "",
+            lead_count: 0,
+            fresh_count: 0,
+          },
+        ]);
       }
       const fd = new FormData();
       fd.append("file", uploadFile);
@@ -365,6 +408,8 @@ export function CampaignManager({
       );
       setUploadFor(null);
       load();
+    } catch {
+      toast.error("Upload failed — check your connection and try again");
     } finally {
       setUploadBusy(false);
     }

@@ -35,22 +35,32 @@ export async function getList(listId: number): Promise<ListRecord | null> {
  * the exact shape the lists migration backfills.
  */
 export async function ensureDefaultList(campaignId: number): Promise<number | null> {
-  const existing = await queryOne<{ id: number }>(
-    'SELECT id FROM lists WHERE campaign_id = ? ORDER BY id ASC LIMIT 1',
-    [campaignId],
-  );
+  // Prefer an ACTIVE list so legacy uploads stay dialable even when the
+  // campaign's oldest list has been switched OFF.
+  const pick = () =>
+    queryOne<{ id: number }>(
+      "SELECT id FROM lists WHERE campaign_id = ? ORDER BY (active = 'Y') DESC, id ASC LIMIT 1",
+      [campaignId],
+    );
+  const existing = await pick();
   if (existing) return existing.id;
   const campaign = await queryOne<{ id: number; data_table_id: number | null }>(
     'SELECT id, data_table_id FROM campaigns WHERE id = ?',
     [campaignId],
   );
   if (!campaign) return null;
+  // Atomic create: two concurrent uploads to a list-less campaign must not
+  // each create their own 'Default List' (lists has no unique key on name).
   const [res]: any = await pool.execute(
     `INSERT INTO lists (name, description, campaign_id, active, template_id)
-     VALUES ('Default List', 'Auto-created for a legacy campaign upload', ?, 'Y', ?)`,
-    [campaignId, campaign.data_table_id],
+     SELECT 'Default List', 'Auto-created for a legacy campaign upload', ?, 'Y', ?
+       FROM DUAL
+      WHERE NOT EXISTS (SELECT 1 FROM lists WHERE campaign_id = ?)`,
+    [campaignId, campaign.data_table_id, campaignId],
   );
-  return res.insertId as number;
+  if (res.affectedRows > 0) return res.insertId as number;
+  const winner = await pick();
+  return winner?.id ?? null;
 }
 
 export type DupMode = 'none' | 'list' | 'campaign';
@@ -143,11 +153,24 @@ export async function importCsvIntoList(
   const conn: PoolConnection = await pool.getConnection();
   try {
     await conn.beginTransaction();
+    // Re-read (and lock) the list's campaign inside the transaction: a
+    // concurrent "move list to another campaign" (PATCH re-home) must not
+    // leave these rows stamped with the OLD campaign_id — that would strand
+    // them outside every claim query.
+    const [lockRows]: any = await conn.execute(
+      'SELECT campaign_id FROM lists WHERE id = ? FOR UPDATE',
+      [list.id],
+    );
+    if (!lockRows[0]) {
+      await conn.rollback();
+      return { error: 'List no longer exists' };
+    }
+    const campaignId: number = lockRows[0].campaign_id;
     for (const c of toInsert) {
       await conn.execute(
         `INSERT INTO csv_data (campaign_id, list_id, phone_number, name, email, company, custom_fields)
          VALUES (?,?,?,?,?,?,?)`,
-        [list.campaign_id, list.id, c.phone, c.name, c.email, c.company, c.customFields],
+        [campaignId, list.id, c.phone, c.name, c.email, c.company, c.customFields],
       );
     }
     await logAudit(
@@ -157,7 +180,7 @@ export async function importCsvIntoList(
         entity: 'lists',
         entityId: list.id,
         details: {
-          campaignId: list.campaign_id,
+          campaignId,
           imported: toInsert.length,
           skippedDuplicates,
           dupMode,
