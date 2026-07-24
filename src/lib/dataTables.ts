@@ -15,12 +15,37 @@ export async function dataTableColumnsForCampaign(campaignId: number): Promise<s
         WHERE c.id = ?`,
       [campaignId],
     );
-    if (!row) return null;
-    // mysql2 returns JSON columns already parsed; guard against string form too.
-    const cols = typeof row.columns === 'string' ? JSON.parse(row.columns) : row.columns;
-    if (Array.isArray(cols) && cols.length > 0) return cols.map((c) => String(c));
-    return null;
+    return normalizeColumns(row?.columns);
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the ordered column list for a LIST's Data Template (lists.template_id),
+ * or null if the list has none — same null-fallback contract as the campaign
+ * variant above. Uploads are list-scoped, so this is the resolver the upload
+ * flow uses; the campaign variant remains for legacy callers.
+ */
+export async function dataTableColumnsForList(listId: number): Promise<string[] | null> {
+  try {
+    const row = await queryOne<{ columns: unknown }>(
+      `SELECT dt.columns AS columns
+         FROM lists l
+         JOIN data_tables dt ON dt.id = l.template_id
+        WHERE l.id = ?`,
+      [listId],
+    );
+    return normalizeColumns(row?.columns);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeColumns(raw: unknown): string[] | null {
+  if (raw == null) return null;
+  // mysql2 returns JSON columns already parsed; guard against string form too.
+  const cols = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (Array.isArray(cols) && cols.length > 0) return cols.map((c) => String(c));
+  return null;
 }

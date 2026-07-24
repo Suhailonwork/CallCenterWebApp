@@ -160,6 +160,34 @@ export interface DataTable {
   created_at: string;
 }
 
+// ---- Lists (VICIdial-style lead containers; campaign = rules, list = data) ----
+
+export interface ListRow {
+  id: number;
+  name: string;
+  description: string | null;
+  campaign_id: number;
+  campaign_name: string;
+  active: 'Y' | 'N';
+  template_id: number | null;
+  template_name?: string | null;
+  created_at: string;
+  lead_count: number;
+  /** Leads with called=0 (not dialed since the last reset). */
+  fresh_count: number;
+  last_call_at?: string | null;
+  /** call_status -> lead count (Lists page breakdown). */
+  status_counts?: Record<string, number>;
+}
+
+export type DupMode = 'none' | 'list' | 'campaign';
+
+export interface RecycleRule {
+  status: string;
+  delay_min: number;
+  max_attempts: number;
+}
+
 export interface CallReportRow {
   id: number;
   employee_name: string | null;

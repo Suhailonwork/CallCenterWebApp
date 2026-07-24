@@ -2,7 +2,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "react-toastify";
-import type { CampaignRow, DialerType, DataTable } from "@/types";
+import type { CampaignRow, DialerType, DataTable, DupMode, ListRow } from "@/types";
 import type { GsmGateway } from "./GatewayManager";
 
 const DIALER_OPTIONS: {
@@ -84,7 +84,15 @@ export function CampaignManager({
   const [recordingEnabled, setRecordingEnabled] = useState(false);
   const [selectedGatewayIds, setSelectedGatewayIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState<number | null>(null);
+  // Upload-CSV modal: a CSV always lands in a LIST of the campaign.
+  const [uploadFor, setUploadFor] = useState<CampaignWithGateways | null>(null);
+  const [uploadLists, setUploadLists] = useState<ListRow[]>([]);
+  const [uploadListId, setUploadListId] = useState<number | "new">("new");
+  const [newListName, setNewListName] = useState("");
+  const [newListTemplateId, setNewListTemplateId] = useState<number | "">("");
+  const [dupMode, setDupMode] = useState<DupMode>("none");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
   // Edit-gateway modal for an existing campaign
   const [editGwFor, setEditGwFor] = useState<CampaignWithGateways | null>(null);
   const [editGwIds, setEditGwIds] = useState<number[]>([]);
@@ -218,24 +226,75 @@ export function CampaignManager({
     }
   }
 
-  async function upload(id: number, file: File) {
-    setUploading(id);
+  async function openUpload(c: CampaignWithGateways) {
+    setUploadFor(c);
+    setUploadFile(null);
+    setDupMode("none");
+    setNewListName("");
+    setNewListTemplateId("");
+    setUploadLists([]);
+    setUploadListId("new");
+    const res = await fetch(`${apiBase}/lists?campaignId=${c.id}`);
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const lists: ListRow[] = data.lists ?? [];
+      setUploadLists(lists);
+      if (lists.length > 0) setUploadListId(lists[0].id);
+    }
+  }
+
+  async function submitUpload() {
+    if (!uploadFor || !uploadFile) {
+      toast.warning("Choose a CSV file first");
+      return;
+    }
+    if (uploadListId === "new" && !newListName.trim()) {
+      toast.warning("Name the new list");
+      return;
+    }
+    setUploadBusy(true);
     try {
+      let listId = uploadListId;
+      if (listId === "new") {
+        const res = await fetch(`${apiBase}/lists`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: newListName.trim(),
+            campaign_id: uploadFor.id,
+            template_id: newListTemplateId === "" ? null : newListTemplateId,
+            active: "Y",
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          toast.error(data.error ?? "Failed to create list");
+          return;
+        }
+        listId = data.id;
+      }
       const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`${apiBase}/campaigns/${id}/contacts`, {
+      fd.append("file", uploadFile);
+      fd.append("dupMode", dupMode);
+      const res = await fetch(`${apiBase}/lists/${listId}/contacts`, {
         method: "POST",
         body: fd,
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         toast.error(data.error ?? "Upload failed");
         return;
       }
-      toast.success(`Imported ${data.imported} contacts`);
+      toast.success(
+        `Imported ${data.imported} leads` +
+          (data.skippedDuplicates > 0
+            ? ` (${data.skippedDuplicates} duplicates skipped)`
+            : ""),
+      );
+      setUploadFor(null);
       load();
     } finally {
-      setUploading(null);
+      setUploadBusy(false);
     }
   }
 
@@ -594,20 +653,12 @@ export function CampaignManager({
                   </div>
 
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <label className="cursor-pointer rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50">
-                      {uploading === c.id ? "Uploading…" : "Upload CSV"}
-                      <input
-                        type="file"
-                        accept=".csv,text/csv"
-                        className="hidden"
-                        disabled={uploading !== null}
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) upload(c.id, f);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
+                    <button
+                      onClick={() => openUpload(c)}
+                      className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50"
+                    >
+                      Upload CSV
+                    </button>
                     <button
                       onClick={() => {
                         setEditGwFor(c);
@@ -650,9 +701,130 @@ export function CampaignManager({
       </div>
 
       <p className="text-xs text-slate-400">
-        CSV format: a header row with a <code>phone</code> column (also accepts{" "}
-        <code>name</code>, <code>email</code>, <code>company</code>).
+        CSV format: a header row with a phone column (<code>phone</code>,{" "}
+        <code>Mobile NO</code>, <code>phone_number</code>, …). Every upload
+        lands in a List of the campaign; the list&apos;s Data Template decides
+        which columns are stored.
       </p>
+
+      {/* ── Upload CSV modal (upload targets a LIST) ── */}
+      {uploadFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 className="text-base font-semibold">
+              Upload CSV — {uploadFor.name}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Leads always belong to a list. Pick one of this campaign&apos;s
+              lists or create a new one.
+            </p>
+
+            <label className="mt-3 block text-sm font-medium text-slate-700">
+              Target list
+            </label>
+            <select
+              value={uploadListId}
+              onChange={(e) =>
+                setUploadListId(
+                  e.target.value === "new" ? "new" : Number(e.target.value),
+                )
+              }
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              {uploadLists.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name} · {l.lead_count} leads ·{" "}
+                  {l.active === "Y" ? "ON" : "OFF"}
+                  {l.template_name ? ` · ${l.template_name}` : ""}
+                </option>
+              ))}
+              <option value="new">➕ Create a new list…</option>
+            </select>
+
+            {uploadListId === "new" && (
+              <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">
+                    New list name
+                  </label>
+                  <input
+                    value={newListName}
+                    onChange={(e) => setNewListName(e.target.value)}
+                    placeholder="e.g. July BX batch"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">
+                    Data Template
+                  </label>
+                  <select
+                    value={newListTemplateId}
+                    onChange={(e) =>
+                      setNewListTemplateId(
+                        e.target.value === "" ? "" : Number(e.target.value),
+                      )
+                    }
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">No template (store all CSV columns)</option>
+                    {dataTables.map((dt) => (
+                      <option key={dt.id} value={dt.id}>
+                        {dt.name} ({dt.columns?.length ?? 0} cols)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  The new list starts ON (dialable) in this campaign.
+                </p>
+              </div>
+            )}
+
+            <label className="mt-3 block text-sm font-medium text-slate-700">
+              Duplicate check
+            </label>
+            <select
+              value={dupMode}
+              onChange={(e) => setDupMode(e.target.value as DupMode)}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              <option value="none">No duplicate check (append everything)</option>
+              <option value="list">Skip phones already in this list</option>
+              <option value="campaign">
+                Skip phones in any list of this campaign
+              </option>
+            </select>
+
+            <label className="mt-3 block text-sm font-medium text-slate-700">
+              CSV file
+            </label>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+              className="mt-1 w-full text-sm"
+            />
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={submitUpload}
+                disabled={uploadBusy}
+                className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {uploadBusy ? "Uploading…" : "Upload"}
+              </button>
+              <button
+                onClick={() => setUploadFor(null)}
+                disabled={uploadBusy}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Edit gateways modal ── */}
       {editGwFor && (

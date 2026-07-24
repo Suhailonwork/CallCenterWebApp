@@ -39,12 +39,26 @@ export function parseCsv(text: string): string[][] {
   return rows.filter((r) => r.some((cell) => cell.trim() !== ''));
 }
 
+/**
+ * Normalize a CSV header / template column name for matching:
+ * trim, collapse internal whitespace runs to one space, case-insensitive.
+ * ("Mobile  NO " ≡ "mobile no" ≡ "MOBILE NO")
+ */
+export function normalizeHeader(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 /** Find phone / name / email / company column indexes from a header row. */
 export function mapColumns(header: string[]) {
   const idx = { phone: -1, name: -1, email: -1, company: -1 };
   header.forEach((h, i) => {
     const k = h.trim().toLowerCase().replace(/[\s_-]+/g, '');
-    if (idx.phone < 0 && ['phone', 'phonenumber', 'mobile', 'number'].includes(k)) {
+    if (
+      idx.phone < 0 &&
+      // 🔸 'mobileno' etc. so the Data Templates' "Mobile NO" column is the
+      // dialed number (see db/seed-templates.mjs).
+      ['phone', 'phonenumber', 'mobile', 'number', 'mobileno', 'mobilenumber', 'phoneno', 'contactno', 'contactnumber'].includes(k)
+    ) {
       idx.phone = i;
     } else if (
       idx.name < 0 &&
@@ -99,7 +113,9 @@ export function buildCustomFieldsForTable(
   columns: string[],
 ): [string, string][] {
   // Map normalized header name -> column index (first occurrence wins).
-  const norm = (s: string) => s.trim().toLowerCase();
+  // Matching is trim + collapse-spaces + case-insensitive (normalizeHeader),
+  // so "Customer  Name" in a CSV still fills the template's "Customer Name".
+  const norm = normalizeHeader;
   const headerIndex = new Map<string, number>();
   header.forEach((h, i) => {
     const k = norm(h);
