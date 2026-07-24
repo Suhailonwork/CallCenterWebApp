@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { query, pool } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
+import { dialStatusesSchema, recycleRulesSchema } from '@/lib/lists';
 
 export const runtime = 'nodejs';
 
@@ -10,6 +11,8 @@ const schema = z.object({
   dialer_type: z.enum(['predictive', 'manual', 'inbound', 'ratio']).optional(),
   gatewayIds:  z.array(z.number().int().positive()).optional(),
   group_id:    z.number().int().positive().nullable().optional(),
+  dial_statuses: dialStatusesSchema.optional(),
+  recycle_rules: recycleRulesSchema.optional(),
 });
 
 /** PATCH /api/admin/campaigns/:id - change status and/or reassign gateways. */
@@ -34,6 +37,22 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     if (d.dialer_type) {
       await conn.execute('UPDATE campaigns SET dialer_type = ? WHERE id = ?', [d.dialer_type, id]);
+    }
+
+    if (d.dial_statuses !== undefined) {
+      // The dialer claims only leads whose status is in this set (the claim
+      // query reads it fresh, so the change applies on the next tick).
+      await conn.execute('UPDATE campaigns SET dial_statuses = ? WHERE id = ?', [
+        JSON.stringify(d.dial_statuses),
+        id,
+      ]);
+    }
+
+    if (d.recycle_rules !== undefined) {
+      await conn.execute('UPDATE campaigns SET recycle_rules = ? WHERE id = ?', [
+        JSON.stringify(d.recycle_rules),
+        id,
+      ]);
     }
 
     if (d.group_id !== undefined) {

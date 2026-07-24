@@ -150,6 +150,10 @@ export interface CampaignRow {
   group_id?: number | null;
   group_name?: string | null;
   data_table_id?: number | null;
+  /** Lead statuses the dialer may claim (JSON column; array once parsed). */
+  dial_statuses?: string[] | string | null;
+  /** Auto-retry rules (JSON column; array once parsed). */
+  recycle_rules?: RecycleRule[] | string | null;
 }
 
 export interface DataTable {

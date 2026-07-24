@@ -25,6 +25,13 @@
  *  This app's vocabulary for VICIdial's NEW / NA / B. */
 const DEFAULT_DIAL_STATUSES = ["NEW", "no_answer", "busy"];
 
+/** Recycle rules new campaigns start with (auto-retry no-pickups, bounded).
+ *  Kept in sync with db/migrate-lists.mjs which backfills the same defaults. */
+const DEFAULT_RECYCLE_RULES = [
+  { status: "no_answer", delay_min: 60, max_attempts: 3 },
+  { status: "busy", delay_min: 30, max_attempts: 3 },
+];
+
 /** mysql2 returns JSON columns already parsed; tolerate string/NULL too. */
 function parseJsonColumn(raw) {
   if (raw == null) return null;
@@ -137,6 +144,7 @@ function buildClaimSelect({ campaignId, listIds, dialStatuses, recycleRules, cla
 
 module.exports = {
   DEFAULT_DIAL_STATUSES,
+  DEFAULT_RECYCLE_RULES,
   parseJsonColumn,
   parseDialStatuses,
   parseRecycleRules,

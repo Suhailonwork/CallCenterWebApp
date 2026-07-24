@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { PoolConnection } from 'mysql2/promise';
 import { pool, query, queryOne } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
@@ -178,3 +179,17 @@ export async function importCsvIntoList(
 export function parseDupMode(raw: unknown): DupMode {
   return raw === 'list' || raw === 'campaign' ? raw : 'none';
 }
+
+// ---- Campaign dial-rule schemas (shared by the campaign create/update routes) ----
+
+export const dialStatusesSchema = z.array(z.string().trim().min(1).max(32)).max(20);
+
+export const recycleRulesSchema = z
+  .array(
+    z.object({
+      status: z.string().trim().min(1).max(32),
+      delay_min: z.number().int().min(1).max(10080), // up to 7 days
+      max_attempts: z.number().int().min(1).max(50),
+    }),
+  )
+  .max(20);

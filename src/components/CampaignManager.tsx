@@ -2,7 +2,14 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "react-toastify";
-import type { CampaignRow, DialerType, DataTable, DupMode, ListRow } from "@/types";
+import type {
+  CampaignRow,
+  DialerType,
+  DataTable,
+  DupMode,
+  ListRow,
+  RecycleRule,
+} from "@/types";
 import type { GsmGateway } from "./GatewayManager";
 
 const DIALER_OPTIONS: {
@@ -42,6 +49,32 @@ const STATUS_STYLE: Record<string, string> = {
   paused: "bg-amber-100 text-amber-700",
   completed: "bg-slate-100 text-slate-600",
 };
+
+// Lead statuses = 'NEW' (never called) + the app's call dispositions.
+// Used for the dial_statuses multi-select and the recycle-rules editor.
+const LEAD_STATUSES: { value: string; label: string; terminal?: boolean }[] = [
+  { value: "NEW", label: "NEW (never called)" },
+  { value: "no_answer", label: "No Answer (NA)" },
+  { value: "busy", label: "Busy (B)" },
+  { value: "failed", label: "Failed / Drop" },
+  { value: "voicemail", label: "Voicemail" },
+  { value: "wrong_number", label: "Wrong Number", terminal: true },
+  { value: "connected", label: "Connected (SALE-like)", terminal: true },
+];
+
+const DEFAULT_DIAL_STATUSES = ["NEW", "no_answer", "busy"];
+
+function parseJsonField<T>(v: unknown, fallback: T): T {
+  if (v == null) return fallback;
+  if (typeof v === "string") {
+    try {
+      return JSON.parse(v) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  return v as T;
+}
 
 type CampaignWithGateways = CampaignRow & { gateways?: GsmGateway[] };
 
@@ -96,6 +129,11 @@ export function CampaignManager({
   // Edit-gateway modal for an existing campaign
   const [editGwFor, setEditGwFor] = useState<CampaignWithGateways | null>(null);
   const [editGwIds, setEditGwIds] = useState<number[]>([]);
+  // Dial-rules modal (dial_statuses multi-select + recycle rules editor)
+  const [rulesFor, setRulesFor] = useState<CampaignWithGateways | null>(null);
+  const [selStatuses, setSelStatuses] = useState<string[]>(DEFAULT_DIAL_STATUSES);
+  const [recycleRules, setRecycleRules] = useState<RecycleRule[]>([]);
+  const [rulesBusy, setRulesBusy] = useState(false);
   const router = useRouter();
   async function load() {
     setLoading(true);
@@ -209,6 +247,40 @@ export function CampaignManager({
     } else {
       toast.error(data.error ?? "Update failed");
       console.error("[updateCampaignGateways]", res.status, data);
+    }
+  }
+
+  function openRules(c: CampaignWithGateways) {
+    setRulesFor(c);
+    setSelStatuses(parseJsonField<string[]>(c.dial_statuses, DEFAULT_DIAL_STATUSES));
+    setRecycleRules(parseJsonField<RecycleRule[]>(c.recycle_rules, []));
+  }
+
+  async function saveRules() {
+    if (!rulesFor) return;
+    for (const r of recycleRules) {
+      if (!r.status || r.delay_min < 1 || r.max_attempts < 1) {
+        toast.warning("Every recycle rule needs a status, delay ≥ 1 min and attempts ≥ 1");
+        return;
+      }
+    }
+    setRulesBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/campaigns/${rulesFor.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dial_statuses: selStatuses,
+          recycle_rules: recycleRules,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return void toast.error(data.error ?? "Update failed");
+      toast.success("Dial rules updated");
+      setRulesFor(null);
+      load();
+    } finally {
+      setRulesBusy(false);
     }
   }
 
@@ -668,6 +740,12 @@ export function CampaignManager({
                     >
                       Edit gateways
                     </button>
+                    <button
+                      onClick={() => openRules(c)}
+                      className="rounded-lg border border-sky-300 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-50"
+                    >
+                      Dial rules
+                    </button>
                     {c.status !== "active" && (
                       <button
                         onClick={() => setStatus(c.id, "active")}
@@ -817,6 +895,179 @@ export function CampaignManager({
               <button
                 onClick={() => setUploadFor(null)}
                 disabled={uploadBusy}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Dial rules modal (dial statuses + lead recycle) ── */}
+      {rulesFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 className="text-base font-semibold">Dial rules — {rulesFor.name}</h2>
+
+            <p className="mt-1 text-xs text-slate-500">
+              The dialer only claims leads whose status is checked below
+              (from lists that are switched ON).
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {LEAD_STATUSES.map((s) => {
+                const checked = selStatuses.includes(s.value);
+                return (
+                  <label
+                    key={s.value}
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs ${
+                      checked
+                        ? "border-indigo-400 bg-indigo-50 text-indigo-800"
+                        : "border-slate-200 hover:bg-slate-50"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        setSelStatuses((prev) =>
+                          prev.includes(s.value)
+                            ? prev.filter((x) => x !== s.value)
+                            : [...prev, s.value],
+                        )
+                      }
+                      className="accent-indigo-600"
+                    />
+                    <span className="font-medium">{s.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            {selStatuses.some(
+              (v) => LEAD_STATUSES.find((s) => s.value === v)?.terminal,
+            ) && (
+              <p className="mt-1 text-xs text-amber-600">
+                ⚠ Connected / Wrong Number are usually final — including them
+                re-dials closed leads after a reset.
+              </p>
+            )}
+            {selStatuses.length === 0 && (
+              <p className="mt-1 text-xs text-red-600">
+                No statuses selected — this campaign will only dial recycled
+                leads (below), nothing fresh.
+              </p>
+            )}
+
+            <div className="mt-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-slate-700">
+                  Lead recycle (auto-retry)
+                </p>
+                <button
+                  onClick={() =>
+                    setRecycleRules((r) => [
+                      ...r,
+                      { status: "no_answer", delay_min: 60, max_attempts: 3 },
+                    ])
+                  }
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50"
+                >
+                  + Add rule
+                </button>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Re-dial leads with a status after a delay, up to N extra
+                attempts — even before a list reset.
+              </p>
+              {recycleRules.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-400">
+                  No recycle rules — leads are only re-dialed after a list RESET.
+                </p>
+              ) : (
+                <div className="mt-2 space-y-1.5">
+                  {recycleRules.map((r, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-xs">
+                      <select
+                        value={r.status}
+                        onChange={(e) =>
+                          setRecycleRules((rules) =>
+                            rules.map((x, j) =>
+                              j === i ? { ...x, status: e.target.value } : x,
+                            ),
+                          )
+                        }
+                        className="flex-1 rounded-lg border border-slate-300 px-2 py-1.5"
+                      >
+                        {LEAD_STATUSES.filter((s) => s.value !== "NEW").map((s) => (
+                          <option key={s.value} value={s.value}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="flex items-center gap-1">
+                        after
+                        <input
+                          type="number"
+                          min={1}
+                          value={r.delay_min}
+                          onChange={(e) =>
+                            setRecycleRules((rules) =>
+                              rules.map((x, j) =>
+                                j === i
+                                  ? { ...x, delay_min: Number(e.target.value) }
+                                  : x,
+                              ),
+                            )
+                          }
+                          className="w-16 rounded-lg border border-slate-300 px-2 py-1.5"
+                        />
+                        min
+                      </label>
+                      <label className="flex items-center gap-1">
+                        max
+                        <input
+                          type="number"
+                          min={1}
+                          value={r.max_attempts}
+                          onChange={(e) =>
+                            setRecycleRules((rules) =>
+                              rules.map((x, j) =>
+                                j === i
+                                  ? { ...x, max_attempts: Number(e.target.value) }
+                                  : x,
+                              ),
+                            )
+                          }
+                          className="w-14 rounded-lg border border-slate-300 px-2 py-1.5"
+                        />
+                        tries
+                      </label>
+                      <button
+                        onClick={() =>
+                          setRecycleRules((rules) => rules.filter((_, j) => j !== i))
+                        }
+                        className="rounded-lg border border-red-200 px-2 py-1.5 font-medium text-red-600 hover:bg-red-50"
+                        title="Remove rule"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={saveRules}
+                disabled={rulesBusy}
+                className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {rulesBusy ? "Saving…" : "Save dial rules"}
+              </button>
+              <button
+                onClick={() => setRulesFor(null)}
+                disabled={rulesBusy}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50"
               >
                 Cancel

@@ -3,6 +3,7 @@ import { authenticate, isError, ok, fail } from '@/lib/api';
 import { pool } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import { tlOwnsCampaign } from '@/lib/groups';
+import { dialStatusesSchema, recycleRulesSchema } from '@/lib/lists';
 
 export const runtime = 'nodejs';
 
@@ -10,6 +11,8 @@ const schema = z.object({
   status:      z.enum(['active', 'paused', 'completed']).optional(),
   dialer_type: z.enum(['predictive', 'manual', 'inbound', 'ratio']).optional(),
   gatewayIds:  z.array(z.number().int().positive()).optional(),
+  dial_statuses: dialStatusesSchema.optional(),
+  recycle_rules: recycleRulesSchema.optional(),
 });
 
 /** PATCH /api/tl/campaigns/:id - edit a campaign inside the TL's groups. */
@@ -38,6 +41,18 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
     if (d.dialer_type) {
       await conn.execute('UPDATE campaigns SET dialer_type = ? WHERE id = ?', [d.dialer_type, id]);
+    }
+    if (d.dial_statuses !== undefined) {
+      await conn.execute('UPDATE campaigns SET dial_statuses = ? WHERE id = ?', [
+        JSON.stringify(d.dial_statuses),
+        id,
+      ]);
+    }
+    if (d.recycle_rules !== undefined) {
+      await conn.execute('UPDATE campaigns SET recycle_rules = ? WHERE id = ?', [
+        JSON.stringify(d.recycle_rules),
+        id,
+      ]);
     }
     if (d.gatewayIds !== undefined) {
       // A campaign must always keep at least one gateway — never allow the

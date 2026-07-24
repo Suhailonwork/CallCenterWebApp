@@ -52,7 +52,7 @@ const {
   DB_NAME = 'callcenter',
 } = process.env;
 
-// Kept in sync with src/lib/lists.ts (DEFAULT_DIAL_STATUSES / DEFAULT_RECYCLE_RULES).
+// Kept in sync with src/lib/dialEligibility.js (DEFAULT_DIAL_STATUSES / DEFAULT_RECYCLE_RULES).
 const DEFAULT_DIAL_STATUSES = ['NEW', 'no_answer', 'busy'];
 const DEFAULT_RECYCLE_RULES = [
   { status: 'no_answer', delay_min: 60, max_attempts: 3 },
