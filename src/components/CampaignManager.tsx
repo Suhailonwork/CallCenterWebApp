@@ -5,12 +5,12 @@ import { toast } from "react-toastify";
 import type {
   CampaignRow,
   DialerType,
-  DataTable,
   DupMode,
   ListRow,
   RecycleRule,
 } from "@/types";
 import type { GsmGateway } from "./GatewayManager";
+import { FieldsEditor } from "./FieldsEditor";
 
 const DIALER_OPTIONS: {
   value: DialerType;
@@ -103,9 +103,6 @@ export function CampaignManager({
   const [allGateways, setAllGateways] = useState<GsmGateway[]>([]);
   const [groupOptions, setGroupOptions] = useState<GroupOption[]>([]);
   const [groupId, setGroupId] = useState<number | "">("");
-  // dataTables is still loaded — the Upload-CSV modal lets a NEW list pick a
-  // template. Campaigns themselves no longer carry a data table.
-  const [dataTables, setDataTables] = useState<DataTable[]>([]);
   const [gwStatus, setGwStatus] = useState<
     Record<number, { reachable: boolean; state: string }>
   >({});
@@ -123,7 +120,7 @@ export function CampaignManager({
   const [uploadLists, setUploadLists] = useState<ListRow[]>([]);
   const [uploadListId, setUploadListId] = useState<number | "new">("new");
   const [newListName, setNewListName] = useState("");
-  const [newListTemplateId, setNewListTemplateId] = useState<number | "">("");
+  const [newListFields, setNewListFields] = useState<string[]>([]);
   const [dupMode, setDupMode] = useState<DupMode>("none");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -142,24 +139,21 @@ export function CampaignManager({
   async function load() {
     setLoading(true);
     try {
-      const [campRes, gwRes, statusRes, grpRes, dtRes] = await Promise.all([
+      const [campRes, gwRes, statusRes, grpRes] = await Promise.all([
         fetch(`${apiBase}/campaigns`),
         fetch("/api/admin/gateways"),
         fetch("/api/admin/gateways/status"),
         fetch(`${apiBase}/groups`),
-        fetch("/api/admin/data-tables"),
       ]);
       const campData = await campRes.json().catch(() => ({}));
       const gwData = await gwRes.json().catch(() => ({}));
       const statusData = await statusRes.json().catch(() => ({}));
       const grpData = await grpRes.json().catch(() => ({}));
-      const dtData = await dtRes.json().catch(() => ({}));
       if (campRes.ok) setCampaigns(campData.campaigns ?? []);
       else toast.error(campData.error ?? "Failed to load campaigns");
       if (gwRes.ok) setAllGateways(gwData.gateways ?? []);
       if (statusRes.ok) setGwStatus(statusData.status ?? {});
       if (grpRes.ok) setGroupOptions(grpData.groups ?? []);
-      if (dtRes.ok) setDataTables(dtData.dataTables ?? []);
     } catch {
       toast.error("Failed to load campaigns");
     } finally {
@@ -322,7 +316,7 @@ export function CampaignManager({
     setUploadFile(null);
     setDupMode("none");
     setNewListName("");
-    setNewListTemplateId("");
+    setNewListFields([]);
     setUploadLists([]);
     setUploadListId("new");
     const res = await fetch(`${apiBase}/lists?campaignId=${c.id}`);
@@ -351,13 +345,14 @@ export function CampaignManager({
     try {
       let listId = uploadListId;
       if (listId === "new") {
+        const cleanFields = newListFields.map((f) => f.trim()).filter(Boolean);
         const res = await fetch(`${apiBase}/lists`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: newListName.trim(),
             campaign_id: uploadFor.id,
-            template_id: newListTemplateId === "" ? null : newListTemplateId,
+            fields: cleanFields.length > 0 ? cleanFields : null,
             active: "Y",
           }),
         });
@@ -380,9 +375,7 @@ export function CampaignManager({
             campaign_id: uploadFor.id,
             campaign_name: uploadFor.name,
             active: "Y",
-            template_id: newListTemplateId === "" ? null : Number(newListTemplateId),
-            template_name:
-              dataTables.find((dt) => dt.id === newListTemplateId)?.name ?? null,
+            fields: cleanFields.length > 0 ? cleanFields : null,
             created_at: "",
             lead_count: 0,
             fresh_count: 0,
@@ -797,7 +790,7 @@ export function CampaignManager({
       <p className="text-xs text-slate-400">
         CSV format: a header row with a phone column (<code>phone</code>,{" "}
         <code>Mobile NO</code>, <code>phone_number</code>, …). Every upload
-        lands in a List of the campaign; the list&apos;s Data Template decides
+        lands in a List of the campaign; the list&apos;s custom fields decide
         which columns are stored.
       </p>
 
@@ -829,7 +822,7 @@ export function CampaignManager({
                 <option key={l.id} value={l.id}>
                   {l.name} · {l.lead_count} leads ·{" "}
                   {l.active === "Y" ? "ON" : "OFF"}
-                  {l.template_name ? ` · ${l.template_name}` : ""}
+                  {l.fields && l.fields.length > 0 ? ` · ${l.fields.length} fields` : ""}
                 </option>
               ))}
               <option value="new">➕ Create a new list…</option>
@@ -850,24 +843,14 @@ export function CampaignManager({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-600">
-                    Data Template
+                    Custom fields
+                    <span className="ml-1 text-slate-400">
+                      (optional — leave empty to store all CSV columns)
+                    </span>
                   </label>
-                  <select
-                    value={newListTemplateId}
-                    onChange={(e) =>
-                      setNewListTemplateId(
-                        e.target.value === "" ? "" : Number(e.target.value),
-                      )
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  >
-                    <option value="">No template (store all CSV columns)</option>
-                    {dataTables.map((dt) => (
-                      <option key={dt.id} value={dt.id}>
-                        {dt.name} ({dt.columns?.length ?? 0} cols)
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mt-1">
+                    <FieldsEditor fields={newListFields} onChange={setNewListFields} />
+                  </div>
                 </div>
                 <p className="text-[11px] text-slate-400">
                   The new list starts ON (dialable) in this campaign.

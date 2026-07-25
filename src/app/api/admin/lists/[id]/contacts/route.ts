@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 /**
  * POST /api/admin/lists/:id/contacts — upload a CSV of leads into a list.
  * FormData: file (CSV, max 5 MB), dupMode = none | list | campaign.
- * The list's Data Template (template_id) decides which columns are stored.
+ * The list's custom fields (lists.fields) decide which columns are stored.
  */
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const u = await authenticate(['admin']);

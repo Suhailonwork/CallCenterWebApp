@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { query, queryOne, pool } from '@/lib/db';
+import { query, pool } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import { groupIdsForTL, tlOwnsGroup } from '@/lib/groups';
 import { DEFAULT_DIAL_STATUSES, DEFAULT_RECYCLE_RULES } from '@/lib/dialEligibility';
@@ -69,7 +69,6 @@ const createSchema = z.object({
   gatewayIds:  z.array(z.number().int().positive()).optional().default([]),
   recording_enabled: z.boolean().optional().default(false),
   group_id:    z.number().int().positive(),
-  data_table_id: z.number().int().positive().nullable().optional(),
   dial_statuses: dialStatusesSchema.optional(),
   recycle_rules: recycleRulesSchema.optional(),
 });
@@ -86,12 +85,6 @@ export async function POST(req: Request) {
   // RBAC: a TL may only create campaigns in groups they run.
   if (!(await tlOwnsGroup(u.id, d.group_id))) {
     return fail('You are not a team lead of that group', 403);
-  }
-
-  // Optional data table — validate it exists before inserting.
-  if (d.data_table_id != null) {
-    const dt = await queryOne('SELECT id FROM data_tables WHERE id = ?', [d.data_table_id]);
-    if (!dt) return fail('Selected data table not found');
   }
 
   // A campaign MUST route through a GSM gateway — make it mandatory so calls
@@ -115,23 +108,23 @@ export async function POST(req: Request) {
     await conn.beginTransaction();
 
     const [res]: any = await conn.execute(
-      `INSERT INTO campaigns (name, description, script, created_by, group_id, data_table_id, status, dialer_type, recording_enabled, dial_statuses, recycle_rules)
-       VALUES (?,?,?,?,?,?, 'active', ?, ?, ?, ?)`,
+      `INSERT INTO campaigns (name, description, script, created_by, group_id, status, dialer_type, recording_enabled, dial_statuses, recycle_rules)
+       VALUES (?,?,?,?,?, 'active', ?, ?, ?, ?)`,
       [
         d.name, d.description ?? null, d.script ?? null, u.id, d.group_id,
-        d.data_table_id ?? null, d.dialer_type, d.recording_enabled ? 1 : 0,
+        d.dialer_type, d.recording_enabled ? 1 : 0,
         JSON.stringify(d.dial_statuses ?? DEFAULT_DIAL_STATUSES),
         JSON.stringify(d.recycle_rules ?? DEFAULT_RECYCLE_RULES),
       ],
     );
     const campaignId: number = res.insertId;
 
-    // Leads always live in a list — every campaign starts with an active
-    // Default List (inheriting the campaign's data table as its template).
+    // Leads always live in a list — every campaign starts with an active,
+    // empty Default List (stores all CSV columns until you set custom fields).
     await conn.execute(
-      `INSERT INTO lists (name, description, campaign_id, active, template_id)
-       VALUES ('Default List', NULL, ?, 'Y', ?)`,
-      [campaignId, d.data_table_id ?? null],
+      `INSERT INTO lists (name, description, campaign_id, active, fields)
+       VALUES ('Default List', NULL, ?, 'Y', NULL)`,
+      [campaignId],
     );
 
     if (d.gatewayIds.length > 0) {

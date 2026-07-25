@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "react-toastify";
-import type { CampaignRow, DataTable, ListRow } from "@/types";
+import type { CampaignRow, ListRow } from "@/types";
+import { FieldsEditor } from "./FieldsEditor";
 
 /**
  * Admin Lists console — VICIdial-style: a campaign is only rules; leads live
@@ -12,7 +13,6 @@ import type { CampaignRow, DataTable, ListRow } from "@/types";
 export function ListsManager() {
   const [lists, setLists] = useState<ListRow[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
-  const [dataTables, setDataTables] = useState<DataTable[]>([]);
   const [campaignFilter, setCampaignFilter] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
 
@@ -21,7 +21,7 @@ export function ListsManager() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [campaignId, setCampaignId] = useState<number | "">("");
-  const [templateId, setTemplateId] = useState<number | "">("");
+  const [fields, setFields] = useState<string[]>([]);
   const [active, setActive] = useState<"Y" | "N">("Y");
   const [saving, setSaving] = useState(false);
 
@@ -30,7 +30,7 @@ export function ListsManager() {
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editCampaignId, setEditCampaignId] = useState<number | "">("");
-  const [editTemplateId, setEditTemplateId] = useState<number | "">("");
+  const [editFields, setEditFields] = useState<string[]>([]);
 
   // Reset confirm modal
   const [resetFor, setResetFor] = useState<ListRow | null>(null);
@@ -46,19 +46,16 @@ export function ListsManager() {
   async function load() {
     setLoading(true);
     try {
-      const [listRes, campRes, dtRes] = await Promise.all([
+      const [listRes, campRes] = await Promise.all([
         fetch("/api/admin/lists"),
         fetch("/api/admin/campaigns"),
-        fetch("/api/admin/data-tables"),
       ]);
       const listData = await listRes.json().catch(() => ({}));
       const campData = await campRes.json().catch(() => ({}));
-      const dtData = await dtRes.json().catch(() => ({}));
       if (listRes.ok) setLists(listData.lists ?? []);
       else toast.error(listData.error ?? "Failed to load lists");
       if (campRes.ok) setCampaigns(campData.campaigns ?? []);
       else toast.error(campData.error ?? "Failed to load campaigns");
-      if (dtRes.ok) setDataTables(dtData.dataTables ?? []);
     } catch {
       toast.error("Failed to load lists");
     } finally {
@@ -83,6 +80,7 @@ export function ListsManager() {
     if (campaignId === "") return void toast.warning("Pick the campaign this list belongs to");
     setSaving(true);
     try {
+      const clean = fields.map((f) => f.trim()).filter(Boolean);
       const res = await fetch("/api/admin/lists", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -90,7 +88,7 @@ export function ListsManager() {
           name: name.trim(),
           description: description || null,
           campaign_id: campaignId,
-          template_id: templateId === "" ? null : templateId,
+          fields: clean.length > 0 ? clean : null,
           active,
         }),
       });
@@ -100,7 +98,7 @@ export function ListsManager() {
       setName("");
       setDescription("");
       setCampaignId("");
-      setTemplateId("");
+      setFields([]);
       setActive("Y");
       setShowForm(false);
       load();
@@ -132,7 +130,7 @@ export function ListsManager() {
     setEditName(l.name);
     setEditDescription(l.description ?? "");
     setEditCampaignId(l.campaign_id);
-    setEditTemplateId(l.template_id ?? "");
+    setEditFields(l.fields ?? []);
   }
 
   async function saveEdit() {
@@ -140,6 +138,7 @@ export function ListsManager() {
     if (!editName.trim()) return void toast.warning("List name is required");
     setBusy(true);
     try {
+      const clean = editFields.map((f) => f.trim()).filter(Boolean);
       const res = await fetch(`/api/admin/lists/${editFor.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -147,7 +146,7 @@ export function ListsManager() {
           name: editName.trim(),
           description: editDescription || null,
           campaign_id: editCampaignId === "" ? undefined : editCampaignId,
-          template_id: editTemplateId === "" ? null : editTemplateId,
+          fields: clean.length > 0 ? clean : null,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -246,43 +245,32 @@ export function ListsManager() {
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="block text-sm font-medium text-slate-700">Campaign</label>
-              <select
-                value={campaignId}
-                onChange={(e) =>
-                  setCampaignId(e.target.value === "" ? "" : Number(e.target.value))
-                }
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              >
-                <option value="">Select a campaign…</option>
-                {campaigns.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700">
-                Data Template
-                <span className="ml-1 text-xs text-slate-400">(optional)</span>
-              </label>
-              <select
-                value={templateId}
-                onChange={(e) =>
-                  setTemplateId(e.target.value === "" ? "" : Number(e.target.value))
-                }
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              >
-                <option value="">No template (store all CSV columns)</option>
-                {dataTables.map((dt) => (
-                  <option key={dt.id} value={dt.id}>
-                    {dt.name} ({dt.columns?.length ?? 0} cols)
-                  </option>
-                ))}
-              </select>
+          <div>
+            <label className="block text-sm font-medium text-slate-700">Campaign</label>
+            <select
+              value={campaignId}
+              onChange={(e) =>
+                setCampaignId(e.target.value === "" ? "" : Number(e.target.value))
+              }
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              <option value="">Select a campaign…</option>
+              {campaigns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700">
+              Custom fields
+              <span className="ml-1 text-xs text-slate-400">
+                (optional — leave empty to store all CSV columns)
+              </span>
+            </label>
+            <div className="mt-1">
+              <FieldsEditor fields={fields} onChange={setFields} />
             </div>
           </div>
           <label className="flex cursor-pointer items-center gap-2 text-sm">
@@ -338,7 +326,7 @@ export function ListsManager() {
                 <th className="py-2 pr-3">ID</th>
                 <th className="py-2 pr-3">Name</th>
                 <th className="py-2 pr-3">Campaign</th>
-                <th className="py-2 pr-3">Template</th>
+                <th className="py-2 pr-3">Fields</th>
                 <th className="py-2 pr-3">Dialing</th>
                 <th className="py-2 pr-3">Leads</th>
                 <th className="py-2 pr-3">Statuses</th>
@@ -358,7 +346,11 @@ export function ListsManager() {
                   </td>
                   <td className="py-2 pr-3">{l.campaign_name}</td>
                   <td className="py-2 pr-3 text-xs text-slate-500">
-                    {l.template_name ?? "—"}
+                    {l.fields && l.fields.length > 0 ? (
+                      <span title={l.fields.join(", ")}>{l.fields.length} fields</span>
+                    ) : (
+                      "all columns"
+                    )}
                   </td>
                   <td className="py-2 pr-3">
                     <button
@@ -476,25 +468,14 @@ export function ListsManager() {
               </p>
             )}
             <label className="mt-3 block text-sm font-medium text-slate-700">
-              Data Template
+              Custom fields
             </label>
-            <select
-              value={editTemplateId}
-              onChange={(e) =>
-                setEditTemplateId(e.target.value === "" ? "" : Number(e.target.value))
-              }
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            >
-              <option value="">No template (store all CSV columns)</option>
-              {dataTables.map((dt) => (
-                <option key={dt.id} value={dt.id}>
-                  {dt.name} ({dt.columns?.length ?? 0} cols)
-                </option>
-              ))}
-            </select>
+            <div className="mt-1">
+              <FieldsEditor fields={editFields} onChange={setEditFields} />
+            </div>
             <p className="mt-1 text-[11px] text-slate-400">
-              The template applies to FUTURE uploads into this list; existing
-              leads keep their stored fields.
+              Fields apply to FUTURE uploads into this list; existing leads keep
+              their stored fields.
             </p>
             <div className="mt-4 flex gap-2">
               <button

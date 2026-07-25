@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { pool, queryOne } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
-import { getList } from '@/lib/lists';
+import { getList, fieldsSchema, normalizeFields } from '@/lib/lists';
 
 export const runtime = 'nodejs';
 
@@ -11,12 +11,12 @@ const patchSchema = z.object({
   description: z.string().max(500).nullable().optional(),
   campaign_id: z.number().int().positive().optional(),
   active: z.enum(['Y', 'N']).optional(),
-  template_id: z.number().int().positive().nullable().optional(),
+  fields: fieldsSchema.nullable().optional(),
 });
 
 /**
  * PATCH /api/admin/lists/:id — modify a list: rename, toggle active,
- * change template, or move it to another campaign. Moving re-homes the
+ * edit custom fields, or move it to another campaign. Moving re-homes the
  * list's leads (csv_data.campaign_id is denormalized for the claim hot
  * path, so it is updated in the same transaction).
  */
@@ -37,10 +37,6 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const target = await queryOne('SELECT id FROM campaigns WHERE id = ?', [d.campaign_id]);
     if (!target) return fail('Target campaign not found', 404);
   }
-  if (d.template_id != null) {
-    const dt = await queryOne('SELECT id FROM data_tables WHERE id = ?', [d.template_id]);
-    if (!dt) return fail('Data template not found', 404);
-  }
 
   const conn = await pool.getConnection();
   try {
@@ -54,8 +50,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (d.active !== undefined) {
       await conn.execute('UPDATE lists SET active = ? WHERE id = ?', [d.active, listId]);
     }
-    if (d.template_id !== undefined) {
-      await conn.execute('UPDATE lists SET template_id = ? WHERE id = ?', [d.template_id, listId]);
+    if (d.fields !== undefined) {
+      const fields = normalizeFields(d.fields);
+      await conn.execute('UPDATE lists SET fields = ? WHERE id = ?', [
+        fields ? JSON.stringify(fields) : null,
+        listId,
+      ]);
     }
     if (d.campaign_id !== undefined && d.campaign_id !== list.campaign_id) {
       // Re-home the list AND its leads to the new campaign.

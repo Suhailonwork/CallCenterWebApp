@@ -22,21 +22,18 @@ export async function dataTableColumnsForCampaign(campaignId: number): Promise<s
 }
 
 /**
- * Resolve the ordered column list for a LIST's Data Template (lists.template_id),
- * or null if the list has none — same null-fallback contract as the campaign
- * variant above. Uploads are list-scoped, so this is the resolver the upload
- * flow uses; the campaign variant remains for legacy callers.
+ * Resolve the ordered custom-field list for a LIST from its own `fields`
+ * column (VICIdial-style — the list owns its layout). Returns null when the
+ * list stores every CSV column (fields NULL/[]). This is the resolver the
+ * upload flow uses.
  */
 export async function dataTableColumnsForList(listId: number): Promise<string[] | null> {
   try {
-    const row = await queryOne<{ columns: unknown }>(
-      `SELECT dt.columns AS columns
-         FROM lists l
-         JOIN data_tables dt ON dt.id = l.template_id
-        WHERE l.id = ?`,
+    const row = await queryOne<{ fields: unknown }>(
+      `SELECT fields FROM lists WHERE id = ?`,
       [listId],
     );
-    return normalizeColumns(row?.columns);
+    return normalizeColumns(row?.fields);
   } catch {
     return null;
   }

@@ -11,6 +11,7 @@
     "db:migrate:data-tables": "node db/migrate-data-tables.mjs",
     "db:migrate:attendance": "node db/migrate-attendance.mjs",
     "db:migrate:lists": "node db/migrate-lists.mjs",
+    "db:migrate:list-fields": "node db/migrate-list-fields.mjs",
     "db:rollback:lists": "node db/rollback-lists.mjs",
     "db:seed": "node db/seed.mjs",
     "db:seed:templates": "node db/seed-templates.mjs",

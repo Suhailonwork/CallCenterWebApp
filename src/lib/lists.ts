@@ -5,6 +5,37 @@ import { logAudit } from '@/lib/audit';
 import { parseCsv, mapColumns, buildCustomFields, buildCustomFieldsForTable } from '@/lib/csv';
 import { dataTableColumnsForList } from '@/lib/dataTables';
 
+/** Up to 100 custom field names, trimmed & non-empty, ≤120 chars each. */
+export const fieldsSchema = z.array(z.string().trim().min(1).max(120)).max(100);
+
+/**
+ * Sanitize an incoming `fields` value into a clean ordered array (dedupe
+ * case-insensitively, drop blanks) or null when the list should store every
+ * CSV column. Also tolerates mysql2's already-parsed JSON / string form.
+ */
+export function normalizeFields(raw: unknown): string[] | null {
+  let arr: unknown = raw;
+  if (typeof arr === 'string') {
+    try {
+      arr = JSON.parse(arr);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(arr)) return null;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of arr) {
+    const s = String(v ?? '').trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out.length > 0 ? out : null;
+}
+
 /** A lists row joined with its campaign (the shape routes pass around). */
 export interface ListRecord {
   id: number;
@@ -14,25 +45,26 @@ export interface ListRecord {
   campaign_name: string;
   group_id: number | null;
   active: 'Y' | 'N';
-  template_id: number | null;
+  fields: string[] | null;
 }
 
 export async function getList(listId: number): Promise<ListRecord | null> {
-  return queryOne<ListRecord>(
+  const row = await queryOne<Omit<ListRecord, 'fields'> & { fields: unknown }>(
     `SELECT l.id, l.name, l.description, l.campaign_id, c.name AS campaign_name,
-            c.group_id, l.active, l.template_id
+            c.group_id, l.active, l.fields
        FROM lists l
        JOIN campaigns c ON c.id = l.campaign_id
       WHERE l.id = ?`,
     [listId],
   );
+  if (!row) return null;
+  return { ...row, fields: normalizeFields(row.fields) };
 }
 
 /**
  * Compat shim for the legacy per-campaign upload endpoints: resolve the
- * campaign's first list, creating an ACTIVE "Default List" (inheriting the
- * campaign's data_table_id as its template) when the campaign has none —
- * the exact shape the lists migration backfills.
+ * campaign's first list, creating an ACTIVE "Default List" (fields = NULL,
+ * i.e. store every CSV column) when the campaign has none.
  */
 export async function ensureDefaultList(campaignId: number): Promise<number | null> {
   // Prefer an ACTIVE list so legacy uploads stay dialable even when the
@@ -44,19 +76,16 @@ export async function ensureDefaultList(campaignId: number): Promise<number | nu
     );
   const existing = await pick();
   if (existing) return existing.id;
-  const campaign = await queryOne<{ id: number; data_table_id: number | null }>(
-    'SELECT id, data_table_id FROM campaigns WHERE id = ?',
-    [campaignId],
-  );
+  const campaign = await queryOne<{ id: number }>('SELECT id FROM campaigns WHERE id = ?', [campaignId]);
   if (!campaign) return null;
   // Atomic create: two concurrent uploads to a list-less campaign must not
-  // each create their own 'Default List' (lists has no unique key on name).
+  // each create their own 'Default List' (unique key on (campaign_id, name)).
   const [res]: any = await pool.execute(
-    `INSERT INTO lists (name, description, campaign_id, active, template_id)
-     SELECT 'Default List', 'Auto-created for a legacy campaign upload', ?, 'Y', ?
+    `INSERT INTO lists (name, description, campaign_id, active, fields)
+     SELECT 'Default List', 'Auto-created for a legacy campaign upload', ?, 'Y', NULL
        FROM DUAL
       WHERE NOT EXISTS (SELECT 1 FROM lists WHERE campaign_id = ?)`,
-    [campaignId, campaign.data_table_id, campaignId],
+    [campaignId, campaignId],
   );
   if (res.affectedRows > 0) return res.insertId as number;
   const winner = await pick();

@@ -173,8 +173,8 @@ export interface ListRow {
   campaign_id: number;
   campaign_name: string;
   active: 'Y' | 'N';
-  template_id: number | null;
-  template_name?: string | null;
+  /** Ordered custom field names stored from CSV uploads; null/[] = store all columns. */
+  fields: string[] | null;
   created_at: string;
   lead_count: number;
   /** Leads with called=0 (not dialed since the last reset). */
