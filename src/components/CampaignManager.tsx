@@ -103,8 +103,9 @@ export function CampaignManager({
   const [allGateways, setAllGateways] = useState<GsmGateway[]>([]);
   const [groupOptions, setGroupOptions] = useState<GroupOption[]>([]);
   const [groupId, setGroupId] = useState<number | "">("");
+  // dataTables is still loaded — the Upload-CSV modal lets a NEW list pick a
+  // template. Campaigns themselves no longer carry a data table.
   const [dataTables, setDataTables] = useState<DataTable[]>([]);
-  const [dataTableId, setDataTableId] = useState<number | "">("");
   const [gwStatus, setGwStatus] = useState<
     Record<number, { reachable: boolean; state: string }>
   >({});
@@ -204,7 +205,8 @@ export function CampaignManager({
           gatewayIds: selectedGatewayIds,
           recording_enabled: recordingEnabled,
           group_id: groupId === "" ? null : groupId,
-          data_table_id: dataTableId === "" ? null : dataTableId,
+          // Campaign = rules only (VICIdial-style). The data template is a
+          // LIST concern now — picked when a list is created / uploaded.
         }),
       });
       const data = await res.json();
@@ -224,7 +226,6 @@ export function CampaignManager({
       setSelectedGatewayIds([]);
       setRecordingEnabled(false);
       setGroupId("");
-      setDataTableId("");
       setShowForm(false);
       load();
     } finally {
@@ -495,38 +496,8 @@ export function CampaignManager({
             </div>
           )}
 
-          {/* ── Data table ── */}
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Data Table
-              <span className="ml-1 text-xs text-slate-400">(optional)</span>
-            </label>
-            <select
-              value={dataTableId}
-              onChange={(e) =>
-                setDataTableId(
-                  e.target.value === "" ? "" : Number(e.target.value),
-                )
-              }
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            >
-              <option value="">No data table (store all CSV columns)</option>
-              {dataTables.map((dt) => (
-                <option key={dt.id} value={dt.id}>
-                  {dt.name} ({dt.columns?.length ?? 0} cols)
-                </option>
-              ))}
-            </select>
-            {dataTableId !== "" &&
-              (() => {
-                const dt = dataTables.find((d) => d.id === dataTableId);
-                return dt ? (
-                  <p className="mt-1 text-xs text-slate-500">
-                    Stores only: {dt.columns.join(", ")}
-                  </p>
-                ) : null;
-              })()}
-          </div>
+          {/* Data template is chosen per LIST (on upload / in Lists), not on
+              the campaign — VICIdial-style: campaign = rules, list = data. */}
 
           {/* ── Dialer type ── */}
           <div>
