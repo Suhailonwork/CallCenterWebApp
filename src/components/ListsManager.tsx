@@ -335,7 +335,7 @@ export function ListsManager() {
                 <th className="py-2 pr-3">Dialing</th>
                 <th className="py-2 pr-3">Leads</th>
                 <th className="py-2 pr-3">Statuses</th>
-                <th className="py-2 pr-3">Last call</th>
+                {/* <th className="py-2 pr-3">Last call</th> */}
                 <th className="py-2">Actions</th>
               </tr>
             </thead>
@@ -388,11 +388,11 @@ export function ListsManager() {
                       ))}
                     </div>
                   </td>
-                  <td className="py-2 pr-3 text-xs text-slate-500">
+                  {/* <td className="py-2 pr-3 text-xs text-slate-500">
                     {fmtDate(l.last_call_at)}
-                  </td>
+                  </td> */}
                   <td className="py-2">
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex flex-nowrap gap-1.5">
                       <button
                         onClick={() => openEdit(l)}
                         className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50"
@@ -424,7 +424,7 @@ export function ListsManager() {
       {/* ── Modify modal ── */}
       {editFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+          <div className="max-h-[90vh] w-full max-w-sm overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
             <h2 className="text-base font-semibold">Modify list — {editFor.name}</h2>
             <label className="mt-3 block text-sm font-medium text-slate-700">Name</label>
             <input
