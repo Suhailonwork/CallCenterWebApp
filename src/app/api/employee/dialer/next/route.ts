@@ -4,6 +4,8 @@ import { agentCanAccessCampaign } from '@/lib/groups';
 import { parseDialStatuses, parseRecycleRules, buildClaimSelect } from '@/lib/dialEligibility';
 import { reserveLead } from '@/lib/leadWriter';
 import { createDialerLog, EVENT } from '@/lib/dialerLog';
+import { phoneIsBusy } from '@/lib/manualClaim';
+import { broadcastChange } from '@/lib/realtime';
 
 export const runtime = 'nodejs';
 
@@ -20,8 +22,11 @@ interface CampaignRules {
   lead_order: string;
 }
 
+/** How many candidate rows to lock so we can skip ones whose number is busy. */
+const CANDIDATE_ROWS = 5;
+
 /**
- * GET /api/employee/dialer/next?campaignId=N
+ * GET /api/employee/dialer/next?campaignId=N&exclude=1,2,3
  *
  * Hands the agent the next dialable lead and atomically RESERVES it
  * (SELECT ... FOR UPDATE SKIP LOCKED inside a transaction), so two agents can
@@ -40,10 +45,19 @@ export async function GET(req: Request) {
   const user = await authenticate(['employee']);
   if (isError(user)) return user;
 
-  const campaignId = Number(new URL(req.url).searchParams.get('campaignId'));
+  const url = new URL(req.url);
+  const campaignId = Number(url.searchParams.get('campaignId'));
   if (!Number.isInteger(campaignId) || campaignId <= 0) {
     return fail('A valid campaignId is required');
   }
+
+  // Leads the agent just skipped — kept out of this hand-out so Skip always
+  // moves forward. They stay fully dialable for everyone else.
+  const exclude = (url.searchParams.get('exclude') ?? '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .slice(0, 50);
 
   // RBAC: the agent must be assigned to this campaign or be in its group.
   if (!(await agentCanAccessCampaign(user.id, campaignId))) {
@@ -73,7 +87,10 @@ export async function GET(req: Request) {
     claimTimeoutSec: CLAIM_TIMEOUT_SEC,
     maxAttempts: Number(campaign.retry_count) || 0,
     leadOrder: campaign.lead_order,
-    limit: 1,
+    // Lock a few candidates so one whose number is already on a call can be
+    // stepped over. Only one is ever reserved; the rest unlock at commit.
+    limit: CANDIDATE_ROWS,
+    excludeIds: exclude,
   });
   if (!claim) return ok({ contact: null, reason: 'no-dialable-statuses' });
 
@@ -83,10 +100,23 @@ export async function GET(req: Request) {
     await conn.beginTransaction();
 
     const [rows]: any = await conn.query(claim.sql, claim.params);
-    const contact = rows[0];
-    if (!contact) {
+    if (rows.length === 0) {
       await conn.commit();
       return ok({ contact: null, reason: 'no-contacts' });
+    }
+
+    // Same customer, different rows: hand out the first whose number is not
+    // already on a line, so two agents never dial one person at once.
+    let contact = null;
+    for (const row of rows) {
+      if ((await phoneIsBusy(conn, row.phone_number, row.id)) === null) {
+        contact = row;
+        break;
+      }
+    }
+    if (!contact) {
+      await conn.commit();
+      return ok({ contact: null, reason: 'all-numbers-busy' });
     }
 
     const previous = await reserveLead(conn, {
@@ -111,6 +141,8 @@ export async function GET(req: Request) {
       },
     });
 
+    // This lead just left the pool — refresh every other agent's view.
+    broadcastChange('dialer');
     return ok({ contact });
   } catch (e) {
     await conn.rollback();

@@ -125,6 +125,15 @@ function buildClaimSelect({
   // Attempt cap.
   params.push(cap, cap);
 
+  // Exclusions come BEFORE the branch clause in the SQL below, so their params
+  // must be pushed before the branch's. Params bind positionally: pushing these
+  // later silently shifts every placeholder after the attempt cap.
+  let excludeSql = "";
+  if (exclude.length > 0) {
+    excludeSql = `\n   AND id NOT IN (${exclude.map(() => "?").join(",")})`;
+    params.push(...exclude);
+  }
+
   // Branch a) FRESH — never dialled since the last reset, status is dialable.
   // dial_statuses = [] still lets a due CALLBACK through, and nothing else.
   const freshSql = `(called = 0 AND call_status IN (${freshStatuses
@@ -142,12 +151,6 @@ function buildClaimSelect({
     params.push(r.status, r.max_attempts, r.delay_min);
   }
   const branchSql = [freshSql, ...recycleTerms].join("\n            OR ");
-
-  let excludeSql = "";
-  if (exclude.length > 0) {
-    excludeSql = `\n   AND id NOT IN (${exclude.map(() => "?").join(",")})`;
-    params.push(...exclude);
-  }
 
   const sql = `SELECT ${LEAD_COLUMNS},
        ${viaRecycleSql} AS via_recycle

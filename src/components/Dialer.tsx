@@ -13,7 +13,7 @@ import {
   Play,
 } from "lucide-react";
 import { SipPhone, type CallState } from "@/lib/sipPhone";
-import { getSocket } from "@/lib/useSocket";
+import { getSocket, useSocketEvent } from "@/lib/useSocket";
 import { Button } from "@/components/Button";
 import type { Campaign, Contact, SipConfig, CallDisposition } from "@/types";
 
@@ -154,6 +154,11 @@ export function Dialer() {
   const [elapsed, setElapsed] = useState(0);
   const [sessionCalls, setSessionCalls] = useState(0);
   const [postCall, setPostCall] = useState<PostCall | null>(null);
+  // Manual mode: one reserved lead at a time, plus the ids this agent skipped
+  // so "Next" always moves forward instead of re-offering the same row.
+  const [leadBusy, setLeadBusy] = useState(false);
+  const [leadReason, setLeadReason] = useState<string | null>(null);
+  const skippedRef = useRef<number[]>([]);
 
   // post-call wrap-up form
   const [pcDisposition, setPcDisposition] = useState<CallDisposition>("connected");
@@ -176,9 +181,15 @@ export function Dialer() {
   registeredRef.current = registered;
   const campaignRef = useRef<Campaign | null>(null);
   campaignRef.current = campaign;
+  const contactRef = useRef<Contact | null>(null);
+  contactRef.current = contact;
   const autoRunningRef = useRef(false);
   autoRunningRef.current = autoRunning;
   const reasonNeedsPayment = pcReason.startsWith("$");
+  // Declared here (not lower down) because the manual-lead effects below list it
+  // as a dependency — a `const` referenced before its initialiser would throw.
+  const inCall =
+    callState === "connecting" || callState === "ringing" || callState === "in-call";
 
   const handleCallState = useCallback((s: CallState) => {
     setCallState(s);
@@ -307,6 +318,124 @@ export function Dialer() {
     return true;
   }
 
+  /* ---------------- manual mode: one reserved lead at a time ---------------- */
+
+  /** Hand the current reservation back. Never a call outcome — the server rolls
+   *  the lead to the status it held before, leaving counters and history alone. */
+  const releaseLead = useCallback(
+    async (leadId: number, reason: "skip" | "campaign-switch" | "closed") => {
+      try {
+        await fetch("/api/employee/dialer/release", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leadId, reason }),
+        });
+      } catch {
+        /* the claim times out server-side anyway */
+      }
+    },
+    [],
+  );
+
+  /** Reserve exactly ONE eligible lead. Loading is not calling. */
+  const loadNextLead = useCallback(async (campaignId: number) => {
+    setLeadBusy(true);
+    setLeadReason(null);
+    try {
+      const qs = new URLSearchParams({ campaignId: String(campaignId) });
+      if (skippedRef.current.length > 0) qs.set("exclude", skippedRef.current.join(","));
+      const res = await fetch(`/api/employee/dialer/next?${qs}`);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) {
+        setLeadReason("Could not load a contact");
+        return;
+      }
+      // A campaign switch during the round trip must not adopt a stale lead.
+      if (campaignRef.current?.id !== campaignId) {
+        if (data.contact) await releaseLead(data.contact.id, "campaign-switch");
+        return;
+      }
+      if (data.contact) {
+        setContact(data.contact);
+      } else {
+        setContact(null);
+        setLeadReason(
+          data.reason === "no-active-lists"
+            ? "No list is switched ON for this campaign."
+            : data.reason === "all-numbers-busy"
+              ? "Every remaining number is already on a call."
+              : "No eligible contacts left in this campaign.",
+        );
+      }
+    } catch {
+      setLeadReason("Network error while loading a contact");
+    } finally {
+      setLeadBusy(false);
+    }
+  }, [releaseLead]);
+
+  /** Skip: release, remember it, take the next one. No call data is written. */
+  async function skipLead() {
+    const c = contactRef.current;
+    const camp = campaignRef.current;
+    if (!c || !camp || leadBusy) return;
+    skippedRef.current = [...skippedRef.current, c.id].slice(-50);
+    setContact(null);
+    await releaseLead(c.id, "skip");
+    await loadNextLead(camp.id);
+  }
+
+  /** Call the loaded contact — server re-validates the claim first. */
+  async function callLoadedContact() {
+    const c = contactRef.current;
+    if (!c || inCall || leadBusy) return;
+    setLeadBusy(true);
+    try {
+      const res = await fetch("/api/employee/dialer/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: c.id }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.allowed) {
+        const why: Record<string, string> = {
+          "claimed-by-another-agent": "Another agent already took this contact",
+          "lead-no-longer-queued": "This contact is no longer available",
+          "phone-already-on-a-call": "That number is already on a call",
+          "campaign-not-assigned": "You are not assigned to this campaign",
+          "lead-not-found": "This contact no longer exists",
+        };
+        toast.warning(why[data?.reason] ?? "Could not start this call");
+        setContact(null);
+        if (campaignRef.current) await loadNextLead(campaignRef.current.id);
+        return;
+      }
+      startCall(c.phone_number, c.name ?? null, campaignRef.current?.id ?? null, c.id);
+    } catch {
+      toast.error("Network error");
+    } finally {
+      setLeadBusy(false);
+    }
+  }
+
+  // Load one lead when a manual campaign is selected, and after each wrap-up.
+  useEffect(() => {
+    if (!registered || !campaign || campaign.dialer_type !== "manual") return;
+    if (contact || postCall || inCall) return;
+    loadNextLead(campaign.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registered, campaign, contact, postCall, inCall]);
+
+  // Another agent claimed/released/finished something — if we are waiting for a
+  // contact, try again. The database stays the source of truth.
+  useSocketEvent("data-changed", (p: { scope?: string }) => {
+    if (p?.scope !== "dialer") return;
+    const camp = campaignRef.current;
+    if (!camp || camp.dialer_type !== "manual") return;
+    if (contactRef.current || postCall || inCall) return;
+    loadNextLead(camp.id);
+  });
+
   useEffect(() => {
     if (!campaign) return;
     fetch(`/api/employee/gateway-status?campaignId=${campaign.id}`)
@@ -361,8 +490,6 @@ export function Dialer() {
   }
 
   function onHangup() { phoneRef.current?.hangup(); }
-
-  const inCall = callState === "connecting" || callState === "ringing" || callState === "in-call";
 
   function pressKey(k: string) {
     if (callState === "in-call") phoneRef.current?.sendDTMF(k);
@@ -423,6 +550,8 @@ export function Dialer() {
       setCallState("idle");
       setElapsed(0);
       setContact(null);
+      // A real attempt is finished — it must not be skipped past next time.
+      skippedRef.current = skippedRef.current.filter((id) => id !== postCall.csvDataId);
       if (autoRunningRef.current) {
         getSocket().emit("agent-available", {
           extension: sipRef.current?.extension,
@@ -443,6 +572,13 @@ export function Dialer() {
     if (!next || next.id === campaign?.id) return;
     getSocket().emit("agent-break");
     setAutoRunning(false);
+    // Give the old campaign's reservation back before moving, so the lead is
+    // immediately available to everyone else instead of waiting out its claim.
+    const held = contactRef.current;
+    if (held) releaseLead(held.id, "campaign-switch");
+    setContact(null);
+    skippedRef.current = [];
+    setLeadReason(null);
     setCampaign(next);
     setComplete(false);
   }
@@ -587,7 +723,8 @@ export function Dialer() {
                 )}
                 {campaign?.dialer_type === "manual" && (
                   <p className="mt-2 text-xs text-slate-400">
-                    Manual mode — use the dial pad to call each contact.
+                    Manual mode — one contact is reserved for you at a time.
+                    Press Call when you are ready, or Next to skip it.
                   </p>
                 )}
                 {campaign?.dialer_type === "inbound" && (
@@ -621,6 +758,27 @@ export function Dialer() {
                   </span>
                 </div>
 
+                {/* Manual mode: call this reserved contact, or move to the next */}
+                {campaign?.dialer_type === "manual" && !inCall && !postCall && (
+                  <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-2.5">
+                    <button
+                      onClick={callLoadedContact}
+                      disabled={!registered || leadBusy || gatewayReachable === false}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Phone className="h-3.5 w-3.5" />
+                      Call
+                    </button>
+                    <button
+                      onClick={skipLead}
+                      disabled={leadBusy}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {leadBusy ? "Working…" : "Next lead / Skip"}
+                    </button>
+                  </div>
+                )}
+
                 {/* Custom fields as compact chips — wraps to as few lines as possible */}
                 {customEntries.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 border-t border-slate-100 pt-2.5">
@@ -646,7 +804,9 @@ export function Dialer() {
                 <span>
                   {autoRunning
                     ? "Waiting for the next connected call…"
-                    : "No contact loaded."}
+                    : leadBusy
+                      ? "Loading the next contact…"
+                      : (leadReason ?? "No contact loaded.")}
                 </span>
               </div>
             )}
