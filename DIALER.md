@@ -34,12 +34,17 @@ NEW ──▶ QUEUED ──▶ DIALING ──▶ RINGING ──┬─▶ CONNECT
 Extra resting statuses: `CALLBACK` (a promised call, always dialable),
 `WRONG_NUMBER` and `DNC` (terminal).
 
-**Non-redialable outcomes.** `CONNECTED`, `CANCELLED`, `WRONG_NUMBER`, `DNC`
-and `COMPLETED` are never dialed again. `parseDialStatuses` strips them from a
-campaign's dial statuses and `parseRecycleRules` drops any recycle rule naming
-them, so the ban holds however the campaign is configured — including campaigns
-saved before the rule existed, since it is enforced where config is *read*.
-Only `NO_ANSWER`, `BUSY`, `FAILED` and `VOICEMAIL` can carry a recycle rule.
+**Non-redialable outcomes.** Only `DNC` is hard-banned — the customer asked not
+to be called, so no campaign configuration may override it. `parseDialStatuses`
+strips it and `parseRecycleRules` drops any rule naming it.
+
+Every other status, including ones that are usually final (`CONNECTED`,
+`WRONG_NUMBER`, `COMPLETED`, `CANCELLED`), may carry a recycle rule. Writing one
+is an explicit instruction to redial that status, and an already-called lead
+becomes eligible as soon as the rule's delay has elapsed since `last_call_at` —
+no list RESET, and `next_retry_at` does not need to be pre-populated. That is
+what makes moving a list between campaigns work: the destination campaign's
+rules govern leads that were called under the source campaign's.
 
 **The invariant:** a lead never stays `NEW` once it has been dialed. The dial
 stamp and the status write happen in the same UPDATE, so there is no window
@@ -86,15 +91,14 @@ OR ( claimed_at < NOW() - INTERVAL :claimTimeout SECOND
 ```
 
 A live call always holds a fresh claim, so a customer who is on the phone right
-now can never be selected a second time. This is belt-and-braces: `CONNECTED`
-is also non-redialable, so it cannot reach the dialable set in the first place.
+now can never be selected a second time — even on a campaign that recycles
+`CONNECTED`, because the mid-call guard keys off the claim, not the status.
 
 Crashes are handled by `recoverStaleLeads`, which runs at startup and every 15s:
 
 - `QUEUED` past the claim timeout → rolled back to `pre_dial_status`
 - `DIALING`/`RINGING` past the ring timeout → `FAILED` + retry per the rules
-- `CONNECTED` past the on-call timeout → `CANCELLED` (not retried — see
-  non-redialable outcomes above)
+- `CONNECTED` past the on-call timeout → `CANCELLED` + retry per the rules
 
 ---
 

@@ -614,10 +614,11 @@ export function CampaignManager({
   // Outcome statuses a call can actually land on that have no recycle rule — a
   // lead reaching one of these is dialled once and then never again. This is
   // the most common reason a campaign quietly "stops calling".
-  // Only these can carry a recycle rule — the backend drops rules on
-  // CONNECTED / CANCELLED / WRONG_NUMBER / DNC / COMPLETED, so warning about
-  // them here would send the operator after a rule that never takes effect.
-  const RETRYABLE_OUTCOMES = ["NO_ANSWER", "BUSY", "FAILED", "VOICEMAIL"];
+  // Ordinary call outcomes an operator expects to retry. Statuses that are
+  // usually final (CONNECTED, WRONG_NUMBER, COMPLETED) are left out on purpose:
+  // they *can* carry a recycle rule, but having none is the normal case, so
+  // warning about them would be noise.
+  const RETRYABLE_OUTCOMES = ["NO_ANSWER", "BUSY", "FAILED", "VOICEMAIL", "CANCELLED"];
   const deadEndStatuses = RETRYABLE_OUTCOMES.filter(
     (s) => !recycleRules.some((r) => normStatus(r.status) === s),
   );

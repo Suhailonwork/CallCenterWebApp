@@ -71,18 +71,20 @@ const TERMINAL_STATUSES = Object.freeze([
  * Outcomes that must never be dialled again, whatever a campaign's
  * dial_statuses or recycle_rules happen to say.
  *
- * The work is already done on these leads: the customer talked to an agent
- * (CONNECTED), the number is not theirs (WRONG_NUMBER), they asked not to be
- * called (DNC), the lead is closed (COMPLETED), or the dialer dropped the call
- * and it is not to be re-attempted (CANCELLED). Redialing any of them is at
- * best wasted dialing and at worst a compliance problem, so the ban is enforced
- * where configuration is read rather than trusted to each caller.
+ * Deliberately just DNC: the customer asked not to be called, which is a legal
+ * obligation rather than a campaign preference, so no configuration may
+ * override it.
+ *
+ * Everything else — including CONNECTED, CANCELLED, WRONG_NUMBER and
+ * COMPLETED — is the admin's call. Writing a recycle rule for a status is an
+ * explicit instruction to redial it, and the engine honours it: a lead that
+ * already reached that status becomes eligible as soon as the rule's delay has
+ * passed, with no list RESET needed. This is what makes moving a list to a
+ * campaign with different rules work — the new campaign's rules govern leads
+ * that were called under the old one. The UI warns when a status is usually
+ * final; it does not forbid it.
  */
-const NON_REDIALABLE_STATUSES = Object.freeze([
-  ...TERMINAL_STATUSES,
-  LEAD_STATUS.CONNECTED,
-  LEAD_STATUS.CANCELLED,
-]);
+const NON_REDIALABLE_STATUSES = Object.freeze([LEAD_STATUS.DNC]);
 
 /** Statuses a campaign dials when campaigns.dial_statuses is NULL. */
 const DEFAULT_DIAL_STATUSES = Object.freeze([
@@ -407,7 +409,15 @@ function planNextAttempt({
     exhausted: Boolean(exhausted),
   });
 
-  if (TERMINAL_STATUSES.includes(s)) return none("terminal-status", s, true);
+  // A hard-banned status can never come back, whatever is configured.
+  if (NON_REDIALABLE_STATUSES.includes(s)) return none("non-redialable", s, true);
+
+  // A normally-final status rests here unless the campaign explicitly wrote a
+  // recycle rule for it. With a rule it falls through and is treated like any
+  // other status, so the claim query and this planner agree on who comes back.
+  if (TERMINAL_STATUSES.includes(s) && !ruleForStatus(recycleRules, s)) {
+    return none("terminal-status", s, true);
+  }
 
   // A campaign-level cap on total attempts always wins — the lead is finished.
   if (cap > 0 && calls >= cap) {
