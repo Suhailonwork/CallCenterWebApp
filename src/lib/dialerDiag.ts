@@ -42,7 +42,25 @@ export interface DialableReport {
   blockers: DialerBlocker[];
 }
 
-export async function dialableReport(campaignId: number): Promise<DialableReport | null> {
+/**
+ * Dial rules to evaluate INSTEAD of the campaign's saved ones.
+ *
+ * The Dial rules modal passes the operator's current, still-unsaved selection
+ * so the count on screen answers the question they are actually asking —
+ * "what would dial if I saved this?". Without it the panel reports the saved
+ * config while sitting next to edited checkboxes, which reads as the engine
+ * ignoring dial statuses.
+ */
+export interface DialRuleOverrides {
+  dialStatuses?: unknown;
+  recycleRules?: unknown;
+  maxAttempts?: number;
+}
+
+export async function dialableReport(
+  campaignId: number,
+  overrides?: DialRuleOverrides,
+): Promise<DialableReport | null> {
   const campaign = await queryOne<any>(
     `SELECT id, name, status, dialer_type, dial_statuses, recycle_rules,
             retry_count, retry_delay_minutes, lead_order
@@ -51,10 +69,21 @@ export async function dialableReport(campaignId: number): Promise<DialableReport
   );
   if (!campaign) return null;
 
-  const dialStatuses = parseDialStatuses(campaign.dial_statuses);
-  const recycleRules = parseRecycleRules(campaign.recycle_rules, campaign.retry_delay_minutes);
+  // Overrides go through the SAME parsers as the stored columns, so a preview
+  // and the eventual saved behaviour can never differ — normalisation, alias
+  // folding and the non-redialable filter all apply identically.
+  const dialStatuses = parseDialStatuses(
+    overrides?.dialStatuses !== undefined ? overrides.dialStatuses : campaign.dial_statuses,
+  );
+  const recycleRules = parseRecycleRules(
+    overrides?.recycleRules !== undefined ? overrides.recycleRules : campaign.recycle_rules,
+    campaign.retry_delay_minutes,
+  );
   const recycleStatuses = recycleRules.map((r: { status: string }) => r.status);
-  const maxAttempts = Number(campaign.retry_count) || 0;
+  const maxAttempts =
+    overrides?.maxAttempts !== undefined
+      ? Number(overrides.maxAttempts) || 0
+      : Number(campaign.retry_count) || 0;
 
   const lists = await query<{ id: number; name: string; active: 'Y' | 'N'; leads: number }>(
     `SELECT l.id, l.name, l.active, COUNT(d.id) AS leads

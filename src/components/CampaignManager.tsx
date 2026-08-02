@@ -309,18 +309,60 @@ export function CampaignManager({
     setLeadOrder(String(c.lead_order ?? "oldest"));
     setCallbacksOn(Number(c.callbacks_enabled ?? 1) === 1);
     setMaxAbandon(Number(c.max_abandon_pct ?? 3) || 3);
-    loadDiag(c.id);
+    setDiag(null); // the effect below evaluates the rules just loaded
   }
 
-  /** Ask the server what the dialer can actually claim for this campaign. */
-  async function loadDiag(campaignId: number) {
+  // Re-evaluate "what can dial" whenever the rules in the editor change, so the
+  // count always describes the configuration on screen instead of the one last
+  // saved. Debounced, and loadDiag() drops out-of-order replies.
+  useEffect(() => {
+    if (!rulesFor) return;
+    const campaignId = rulesFor.id;
+    const t = setTimeout(() => {
+      loadDiag(campaignId, {
+        dial_statuses: selStatuses,
+        // Half-typed rows would fail validation and blank the panel mid-edit.
+        recycle_rules: recycleRules.filter(
+          (r) => r.status && Number(r.delay_min) >= 1 && Number(r.max_attempts) >= 1,
+        ),
+        retry_count: Number(maxAttempts) || 0,
+      });
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rulesFor, selStatuses, recycleRules, maxAttempts]);
+
+  /**
+   * Ask the server what the dialer could claim. `pending` sends the rules
+   * currently in the editor so the count answers "what would dial if I saved
+   * this?" — the server evaluates them with the engine's own claim predicate,
+   * so the number on screen and the engine's lead selection always agree.
+   */
+  async function loadDiag(
+    campaignId: number,
+    pending?: { dial_statuses: string[]; recycle_rules: RecycleRule[]; retry_count: number },
+  ) {
     const seq = ++diagReq.current;
     setDiagBusy(true);
-    setDiag(null);
     try {
-      const res = await fetch(`${apiBase}/campaigns/${campaignId}/dialable`);
+      const url = `${apiBase}/campaigns/${campaignId}/dialable`;
+      const res = pending
+        ? await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              dial_statuses: pending.dial_statuses,
+              recycle_rules: pending.recycle_rules.map((r) => ({
+                status: r.status,
+                delay_min: Number(r.delay_min),
+                max_attempts: Number(r.max_attempts),
+              })),
+              retry_count: Number(pending.retry_count) || 0,
+            }),
+          })
+        : await fetch(url);
       const data = await res.json().catch(() => null);
-      if (seq !== diagReq.current) return; // a different campaign was opened
+      if (seq !== diagReq.current) return; // a newer edit already superseded this
       if (res.ok && data) setDiag(data);
     } catch {
       /* the panel is advisory — never block the modal on it */
@@ -1108,8 +1150,8 @@ export function CampaignManager({
                     }
                   >
                     {diag.dialable > 0
-                      ? `${diag.dialable} of ${diag.totalLeads} lead${diag.totalLeads === 1 ? "" : "s"} can dial right now`
-                      : `Nothing can dial right now (${diag.totalLeads} lead${diag.totalLeads === 1 ? "" : "s"} in ON lists)`}
+                      ? `${diag.dialable} of ${diag.totalLeads} lead${diag.totalLeads === 1 ? "" : "s"} can dial with these rules`
+                      : `Nothing can dial with these rules (${diag.totalLeads} lead${diag.totalLeads === 1 ? "" : "s"} in ON lists)`}
                   </p>
                   {diag.blockers.length > 0 && (
                     <ul className="mt-1.5 space-y-1">
