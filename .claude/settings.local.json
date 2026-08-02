@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\(src/|\\\\.html$|vite\\\\.config|tsconfig|tailwind\\)\")",
+      "PowerShell(npx tsc --noEmit -p tsconfig.json 2>&1)",
+      "Bash(node \"C:/Users/Suhai/AppData/Local/Temp/claude/c--Users-Suhai-OneDrive-Desktop-CallCenterWebApp/6aaa3257-d415-4c90-85dc-ff36f5e9ae12/scratchpad/jsontest.mjs\")",
+      "Bash(cp \"C:/Users/Suhai/AppData/Local/Temp/claude/c--Users-Suhai-OneDrive-Desktop-CallCenterWebApp/6aaa3257-d415-4c90-85dc-ff36f5e9ae12/scratchpad/jsontest.mjs\" ./__jsontest.mjs)",
+      "Bash(node ./__jsontest.mjs)",
+      "Bash(rm -f ./__jsontest.mjs)",
+      "Bash(ls \"C:/Users/Suhai/.claude/projects/c--Users-Suhai-OneDrive-Desktop-CallCenterWebApp/memory/\")",
+      "Bash(cat \"C:/Users/Suhai/.claude/projects/c--Users-Suhai-OneDrive-Desktop-CallCenterWebApp/memory/MEMORY.md\")",
+      "PowerShell(npm run db:migrate:data-tables 2>&1)",
+      "PowerShell(npm run build 2>&1)",
+      "Bash(node --check ari-app.js)",
+      "Bash(node --check predictive-engine.js)",
+      "Bash(node --check server.mjs)",
+      "Bash(npm run *)",
+      "PowerShell(Get-ChildItem -Path \"d:\\\\Suhail\\\\callCenter\\\\src\" -Recurse -File | Select-Object @{n='Path';e={$_.FullName.Replace\\('D:\\\\Suhail\\\\callCenter\\\\',''\\)}}, Length | Sort-Object Path | Format-Table -AutoSize | Out-String -Width 200)",
+      "PowerShell($ErrorActionPreference='SilentlyContinue'; $r = Test-NetConnection -ComputerName 100.106.191.36 -Port 3306 -WarningAction SilentlyContinue; \"TCP 3306 reachable: $\\($r.TcpTestSucceeded\\)\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\inspect.mjs\")",
+      "PowerShell(node db/migrate-vicidial.mjs)",
+      "PowerShell(npx tsc --noEmit 2>&1)",
+      "PowerShell(npx next build 2>&1)",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\smoke.mjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\units.mjs\")",
+      "PowerShell(if \\($?\\) { \"TYPECHECK OK\" })",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\units.mjs\" 2>&1)",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\smoke.mjs\" 2>&1)",
+      "PowerShell(node -e \"require\\('D:/Suhail/callCenter/predictive-engine.js'\\); require\\('D:/Suhail/callCenter/ari-app.js'\\); console.log\\('engine + ari parse OK'\\)\")",
+      "PowerShell(npx tsc --noEmit)",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\sqlcheck.mjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\sqlcheck.mjs\" 2>&1)",
+      "PowerShell(npx next build 2>&1 | Select-String -Pattern \"error|Error|Failed|warn|Compiled successfully\" | Select-Object -First 10; \"BUILD EXIT: $LASTEXITCODE\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\diagnose.mjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\diagnose.mjs\" 2>&1)",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\diagcheck.mjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\terminal.mjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\sqlpeek.mjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\A-ONE\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Suhail-callCenter\\\\991118d2-a6c3-41ba-8b47-6f5981e06026\\\\scratchpad\\\\terminal.mjs\" 2>&1)"
+    ]
+  }
+}

@@ -1,0 +1,167 @@
+import { z } from 'zod';
+import { authenticate, isError, ok, fail } from '@/lib/api';
+import { query, pool } from '@/lib/db';
+import { logAudit } from '@/lib/audit';
+import { groupIdsForTL, tlOwnsGroup } from '@/lib/groups';
+import { DEFAULT_DIAL_STATUSES, DEFAULT_RECYCLE_RULES } from '@/lib/dialEligibility';
+import { dialStatusesSchema, recycleRulesSchema, DEFAULT_FIELDS_JSON } from '@/lib/lists';
+import type { CampaignRow } from '@/types';
+
+export const runtime = 'nodejs';
+
+/**
+ * GET /api/tl/campaigns - campaigns belonging to this TL's groups only.
+ * Same response shape as GET /api/admin/campaigns so the campaign UI
+ * component can be shared between the two consoles.
+ */
+export async function GET() {
+  const u = await authenticate(['tl']);
+  if (isError(u)) return u;
+
+  const groupIds = await groupIdsForTL(u.id);
+  if (groupIds.length === 0) return ok({ campaigns: [] });
+
+  const ph = groupIds.map(() => '?').join(',');
+  const campaigns = await query<CampaignRow>(
+    `SELECT c.id, c.name, c.description, c.status, c.dialer_type,
+            c.group_id, g.name AS group_name,
+            c.dial_statuses, c.recycle_rules,
+            c.dial_ratio, c.retry_count, c.retry_delay_minutes, c.dial_timeout_sec,
+            c.wrapup_seconds, c.lead_order, c.callbacks_enabled, c.max_abandon_pct,
+            c.recording_enabled,
+            TIME_FORMAT(c.calling_start, '%H:%i') AS calling_start,
+            TIME_FORMAT(c.calling_end,   '%H:%i') AS calling_end,
+            DATE_FORMAT(c.created_at, '%Y-%m-%dT%H:%i:%s') AS created_at,
+            COUNT(DISTINCT d.id)  AS total_contacts,
+            COALESCE(SUM(d.called), 0) AS called_contacts
+       FROM campaigns c
+       JOIN \`groups\` g ON g.id = c.group_id
+       LEFT JOIN csv_data d ON d.campaign_id = c.id
+      WHERE c.group_id IN (${ph})
+      GROUP BY c.id
+      ORDER BY c.created_at DESC`,
+    groupIds,
+  );
+
+  if (campaigns.length === 0) return ok({ campaigns: [] });
+
+  const ids = campaigns.map((c) => c.id);
+  const gatewayRows = await query<any>(
+    `SELECT cg.campaign_id, g.id AS gateway_id, g.id, g.name, g.ip, g.port, g.channels, g.status
+       FROM campaign_gateways cg
+       JOIN gsm_gateways g ON g.id = cg.gateway_id
+      WHERE cg.campaign_id IN (${ids.map(() => '?').join(',')})`,
+    ids,
+  );
+
+  const gwMap: Record<number, any[]> = {};
+  for (const row of gatewayRows) {
+    if (!gwMap[row.campaign_id]) gwMap[row.campaign_id] = [];
+    gwMap[row.campaign_id].push(row);
+  }
+
+  const result = campaigns.map((c) => ({ ...c, gateways: gwMap[c.id] ?? [] }));
+  return ok({ campaigns: result });
+}
+
+const DIALER_TYPES = ['predictive', 'manual', 'inbound', 'ratio'] as const;
+
+const createSchema = z.object({
+  name:        z.string().min(1).max(150),
+  description: z.string().max(2000).nullable().optional(),
+  script:      z.string().max(4000).nullable().optional(),
+  dialer_type: z.enum(DIALER_TYPES).optional().default('manual'),
+  gatewayIds:  z.array(z.number().int().positive()).optional().default([]),
+  recording_enabled: z.boolean().optional().default(false),
+  group_id:    z.number().int().positive(),
+  dial_statuses: dialStatusesSchema.optional(),
+  recycle_rules: recycleRulesSchema.optional(),
+});
+
+/** POST /api/tl/campaigns - create a campaign inside one of the TL's groups. */
+export async function POST(req: Request) {
+  const u = await authenticate(['tl']);
+  if (isError(u)) return u;
+
+  const parsed = createSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return fail('Invalid campaign data (a group is required)');
+  const d = parsed.data;
+
+  // RBAC: a TL may only create campaigns in groups they run.
+  if (!(await tlOwnsGroup(u.id, d.group_id))) {
+    return fail('You are not a team lead of that group', 403);
+  }
+
+  // A campaign MUST route through a GSM gateway — make it mandatory so calls
+  // never fall back to a missing endpoint ("Endpoint not set") at dial time.
+  if (!d.gatewayIds || d.gatewayIds.length === 0) {
+    return fail('Select at least one GSM gateway for this campaign');
+  }
+  {
+    const ph = d.gatewayIds.map(() => '?').join(',');
+    const valid = await query<{ id: number }>(
+      `SELECT id FROM gsm_gateways WHERE id IN (${ph})`,
+      d.gatewayIds,
+    );
+    if (valid.length !== d.gatewayIds.length) {
+      return fail('One or more selected gateways do not exist');
+    }
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [res]: any = await conn.execute(
+      `INSERT INTO campaigns (name, description, script, created_by, group_id, status, dialer_type, recording_enabled, dial_statuses, recycle_rules)
+       VALUES (?,?,?,?,?, 'active', ?, ?, ?, ?)`,
+      [
+        d.name, d.description ?? null, d.script ?? null, u.id, d.group_id,
+        d.dialer_type, d.recording_enabled ? 1 : 0,
+        JSON.stringify(d.dial_statuses ?? DEFAULT_DIAL_STATUSES),
+        JSON.stringify(d.recycle_rules ?? DEFAULT_RECYCLE_RULES),
+      ],
+    );
+    const campaignId: number = res.insertId;
+
+    // Leads always live in a list — every campaign starts with an active
+    // Default List carrying the mandatory default fields.
+    await conn.execute(
+      `INSERT INTO lists (name, description, campaign_id, active, fields)
+       VALUES ('Default List', NULL, ?, 'Y', ?)`,
+      [campaignId, DEFAULT_FIELDS_JSON],
+    );
+
+    if (d.gatewayIds.length > 0) {
+      const placeholders = d.gatewayIds.map(() => '(?, ?)').join(', ');
+      const vals = d.gatewayIds.flatMap((gid) => [campaignId, gid]);
+      await conn.execute(
+        `INSERT IGNORE INTO campaign_gateways (campaign_id, gateway_id) VALUES ${placeholders}`,
+        vals,
+      );
+    }
+
+    await logAudit(
+      {
+        userId: u.id,
+        action: 'create_campaign',
+        entity: 'campaigns',
+        entityId: campaignId,
+        details: { name: d.name, dialer_type: d.dialer_type, group_id: d.group_id, by: 'tl' },
+      },
+      conn,
+    );
+
+    await conn.commit();
+    return ok({ id: campaignId }, 201);
+  } catch (e: any) {
+    await conn.rollback();
+    console.error('[tl/campaigns] create failed:', e);
+    if (e?.code === 'ER_NO_SUCH_TABLE' || e?.code === 'ER_BAD_FIELD_ERROR') {
+      return fail('Database not migrated — run npm run db:migrate:lists first', 503);
+    }
+    return fail('Failed to create campaign', 500);
+  } finally {
+    conn.release();
+  }
+}
