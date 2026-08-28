@@ -21,6 +21,7 @@ const startAri = require("./ari-app.js");
 const startPredictiveEngine = require("./predictive-engine.js");
 const { createAgentRegistry, AGENT_STATE } = require("./src/lib/agentRegistry.js");
 const { createDialerLog } = require("./src/lib/dialerLog.js");
+const { labelFor } = require("./src/lib/dialerModes.js");
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -86,6 +87,39 @@ app.prepare().then(() => {
   const log = createDialerLog(null, { tag: "AGENTS", toDb: false });
   const registry = createAgentRegistry({ io, log });
 
+  /**
+   * May this agent enter the pacing pool for the campaign they named?
+   *
+   * READY is a promise the server makes to itself — "open lines for this
+   * seat" — so it is only legal on a mode the server dials for (predictive
+   * or ratio). Manual and inbound agents are parked in PAUSE and told why,
+   * which keeps a hand-crafted socket message from turning a manual campaign
+   * into a dialable one. Every path that can reach READY goes through here.
+   */
+  async function allowReady(socket, user, info) {
+    const campaignId = info && info.campaignId;
+    const engineDriven = await engine.campaignIsEngineDriven(campaignId).catch(() => false);
+    if (engineDriven) return true;
+
+    const mode = await engine.campaignMode(campaignId).catch(() => null);
+    registry.setState(user.id, AGENT_STATE.PAUSE, {
+      extension: info && info.extension,
+      campaignId,
+      reason: "mode-not-engine-driven",
+    });
+    socket.emit("dialer-mode-changed", {
+      campaignId,
+      dialerType: mode,
+      reason:
+        mode === null
+          ? "That campaign is not available for auto-dialing."
+          : `${labelFor(mode)} campaigns are dialled by the agent — the ` +
+            `auto-dialer does not open lines for them.`,
+    });
+    log.info("ready refused", { agent: user.id, campaign: campaignId, mode });
+    return false;
+  }
+
   io.on("connection", async (socket) => {
     const user = await userFromCookie(socket.handshake.headers.cookie);
     socket.data.user = user;
@@ -107,10 +141,19 @@ app.prepare().then(() => {
       if (u && u.role === "employee") registry.applyLegacyState(u.id, state);
     });
 
-    /** Agent joined the dialing pool ("Go available" / wrap-up saved). */
-    socket.on("agent-available", (info) => {
+    /**
+     * Agent joined the dialing pool ("Go available" / wrap-up saved).
+     *
+     * READY means "the server may open a line for me", so it is only a legal
+     * state on a campaign the server actually dials for. A manual or inbound
+     * campaign is refused here rather than in the browser: the UI already
+     * hides the button, and this is what makes that a rule instead of a
+     * suggestion.
+     */
+    socket.on("agent-available", async (info) => {
       const u = socket.data.user;
       if (!u || u.role !== "employee") return;
+      if (!(await allowReady(socket, u, info))) return;
       registry.setState(u.id, AGENT_STATE.READY, {
         extension: info && info.extension,
         campaignId: info && info.campaignId,
@@ -128,11 +171,13 @@ app.prepare().then(() => {
     });
 
     /** Explicit state control for clients that want the full vocabulary. */
-    socket.on("agent-state", (payload) => {
+    socket.on("agent-state", async (payload) => {
       const u = socket.data.user;
       if (!u || u.role !== "employee") return;
       const next = payload && String(payload.state || "").toUpperCase();
       if (!next || !AGENT_STATE[next]) return;
+      // Same gate as agent-available: this is the other way into READY.
+      if (next === AGENT_STATE.READY && !(await allowReady(socket, u, payload))) return;
       registry.setState(u.id, next, {
         extension: payload.extension,
         campaignId: payload.campaignId,

@@ -22,7 +22,7 @@ export async function GET() {
   const campaigns = await query<CampaignRow>(
     `SELECT c.id, c.name, c.description, c.status, c.dialer_type,
             c.group_id, grp.name AS group_name,
-            c.dial_statuses, c.recycle_rules,
+            c.dial_statuses, c.recycle_rules, c.disposition_rules,
             c.dial_ratio, c.retry_count, c.retry_delay_minutes, c.dial_timeout_sec,
             c.wrapup_seconds, c.lead_order, c.callbacks_enabled, c.max_abandon_pct,
             c.recording_enabled,
@@ -118,7 +118,9 @@ export async function POST(req: Request) {
 
     // Pacing / retry knobs sent with the create request (all optional — the
     // column defaults are already VICIdial-sane: ratio 1, unlimited attempts).
-    await applyCampaignPacing(conn, campaignId, d);
+    // Gated by the mode being created: a manual campaign never stores a line
+    // count, so switching it to predictive later starts from the safe default.
+    await applyCampaignPacing(conn, campaignId, d, d.dialer_type);
 
     // Leads always live in a list — every campaign starts with an active
     // Default List carrying the mandatory default fields.

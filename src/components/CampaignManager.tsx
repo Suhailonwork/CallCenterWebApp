@@ -5,6 +5,8 @@ import { toast } from "react-toastify";
 import type {
   CampaignRow,
   DialerType,
+  DispositionAction,
+  DispositionRuleOverride,
   DupMode,
   ListRow,
   RecycleRule,
@@ -12,6 +14,19 @@ import type {
 import type { GsmGateway } from "./GatewayManager";
 import { FieldsEditor } from "./FieldsEditor";
 import { DEFAULT_LIST_FIELDS } from "@/lib/listFields";
+import {
+  DISPOSITION_CATALOG,
+  describeRule,
+  parseDispositionRules,
+  resolveDisposition,
+} from "@/lib/dispositionRules";
+import {
+  describeMode,
+  isPredictive,
+  labelFor,
+  modeOwnsPacingField,
+  normalizeMode,
+} from "@/lib/dialerModes";
 
 const DIALER_OPTIONS: {
   value: DialerType;
@@ -159,7 +174,13 @@ export function CampaignManager({
   const [rulesFor, setRulesFor] = useState<CampaignWithGateways | null>(null);
   const [selStatuses, setSelStatuses] = useState<string[]>(DEFAULT_DIAL_STATUSES);
   const [recycleRules, setRecycleRules] = useState<RecycleRule[]>([]);
+  // Overrides of the disposition rules; a code with no entry keeps its default.
+  const [dispoRules, setDispoRules] = useState<Record<string, DispositionRuleOverride>>({});
+  const [dispoOpen, setDispoOpen] = useState(false);
   const [rulesBusy, setRulesBusy] = useState(false);
+  // The mode of the campaign whose rules are open. Pacing controls follow it:
+  // the mode decides which settings exist at all, and the API refuses the rest.
+  const rulesMode = normalizeMode(rulesFor?.dialer_type);
   // Pacing knobs, edited in the same modal as the dial rules.
   const [dialRatio, setDialRatio] = useState(1);
   const [maxAttempts, setMaxAttempts] = useState(0);
@@ -302,6 +323,8 @@ export function CampaignManager({
         status: normStatus(r.status),
       })),
     );
+    setDispoRules(parseDispositionRules(c.disposition_rules));
+    setDispoOpen(false);
     setDialRatio(Number(c.dial_ratio ?? 1) || 1);
     setMaxAttempts(Number(c.retry_count ?? 0) || 0);
     setDialTimeout(Number(c.dial_timeout_sec ?? 45) || 45);
@@ -310,6 +333,38 @@ export function CampaignManager({
     setCallbacksOn(Number(c.callbacks_enabled ?? 1) === 1);
     setMaxAbandon(Number(c.max_abandon_pct ?? 3) || 3);
     setDiag(null); // the effect below evaluates the rules just loaded
+  }
+
+  /* ---- disposition rules: the default is the catalogue, and only what the
+   *      operator actually changes is stored as an override. ---- */
+
+  /** The rule a code produces with the overrides currently in the editor. */
+  function dispoRuleFor(code: string) {
+    return resolveDisposition({ code, overrides: dispoRules })!;
+  }
+
+  /** The rule the same code produces with no overrides at all. */
+  function dispoDefaultFor(code: string) {
+    return resolveDisposition({ code })!;
+  }
+
+  function setDispoField(
+    code: string,
+    field: "action" | "delay_min" | "max_attempts",
+    value: DispositionAction | number | null,
+  ) {
+    setDispoRules((prev) => {
+      const next: Record<string, DispositionRuleOverride> = { ...prev };
+      const entry: DispositionRuleOverride = { ...(prev[code] ?? {}) };
+      const fallback = dispoDefaultFor(code) as unknown as Record<string, unknown>;
+      // Back to the catalogue value = no override at all, so the campaign keeps
+      // following the default if it ever changes.
+      if (value === null || value === fallback[field]) delete entry[field];
+      else (entry as Record<string, unknown>)[field] = value;
+      if (Object.keys(entry).length === 0) delete next[code];
+      else next[code] = entry;
+      return next;
+    });
   }
 
   // Re-evaluate "what can dial" whenever the rules in the editor change, so the
@@ -325,12 +380,13 @@ export function CampaignManager({
         recycle_rules: recycleRules.filter(
           (r) => r.status && Number(r.delay_min) >= 1 && Number(r.max_attempts) >= 1,
         ),
+        disposition_rules: Object.keys(dispoRules).length > 0 ? dispoRules : null,
         retry_count: Number(maxAttempts) || 0,
       });
     }, 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rulesFor, selStatuses, recycleRules, maxAttempts]);
+  }, [rulesFor, selStatuses, recycleRules, dispoRules, maxAttempts]);
 
   /**
    * Ask the server what the dialer could claim. `pending` sends the rules
@@ -340,7 +396,12 @@ export function CampaignManager({
    */
   async function loadDiag(
     campaignId: number,
-    pending?: { dial_statuses: string[]; recycle_rules: RecycleRule[]; retry_count: number },
+    pending?: {
+      dial_statuses: string[];
+      recycle_rules: RecycleRule[];
+      disposition_rules: Record<string, DispositionRuleOverride> | null;
+      retry_count: number;
+    },
   ) {
     const seq = ++diagReq.current;
     setDiagBusy(true);
@@ -357,6 +418,7 @@ export function CampaignManager({
                 delay_min: Number(r.delay_min),
                 max_attempts: Number(r.max_attempts),
               })),
+              disposition_rules: pending.disposition_rules,
               retry_count: Number(pending.retry_count) || 0,
             }),
           })
@@ -416,8 +478,15 @@ export function CampaignManager({
       );
       return;
     }
-    if (!(Number(dialRatio) >= 1 && Number(dialRatio) <= 10)) {
-      toast.warning("Dial ratio must be between 1.0 and 10.0");
+    if (
+      modeOwnsPacingField(rulesMode, "dial_ratio") &&
+      !(Number(dialRatio) >= 1 && Number(dialRatio) <= 10)
+    ) {
+      toast.warning(
+        isPredictive(rulesMode)
+          ? "Max lines per agent must be between 1.0 and 10.0"
+          : "Lines per ready agent must be between 1.0 and 10.0",
+      );
       return;
     }
     if (!(Number(maxAttempts) >= 0 && Number(maxAttempts) <= 100)) {
@@ -441,13 +510,24 @@ export function CampaignManager({
             delay_min: Number(r.delay_min),
             max_attempts: Number(r.max_attempts),
           })),
-          dial_ratio: Number(dialRatio),
+          // NULL = follow the catalogue defaults for every disposition.
+          disposition_rules: Object.keys(dispoRules).length > 0 ? dispoRules : null,
           retry_count: Number(maxAttempts),
           dial_timeout_sec: Number(dialTimeout),
-          wrapup_seconds: Number(wrapupSeconds),
           lead_order: leadOrder,
           callbacks_enabled: callbacksOn,
-          max_abandon_pct: Number(maxAbandon),
+          // Pacing goes only to the modes that own it. Sending dial_ratio for
+          // a manual campaign is not merely useless — the API rejects the whole
+          // request, which is the behaviour we want when the two disagree.
+          ...(modeOwnsPacingField(rulesMode, "dial_ratio")
+            ? { dial_ratio: Number(dialRatio) }
+            : {}),
+          ...(modeOwnsPacingField(rulesMode, "max_abandon_pct")
+            ? { max_abandon_pct: Number(maxAbandon) }
+            : {}),
+          ...(modeOwnsPacingField(rulesMode, "wrapup_seconds")
+            ? { wrapup_seconds: Number(wrapupSeconds) }
+            : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1349,27 +1429,138 @@ export function CampaignManager({
               )}
             </div>
 
-            {/* ── Pacing ── */}
+            {/* ── Disposition rules ── */}
             <div className="mt-4 border-t border-slate-100 pt-3">
-              <p className="text-sm font-medium text-slate-700">Pacing</p>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-slate-700">
+                  Disposition rules
+                  {Object.keys(dispoRules).length > 0 && (
+                    <span className="ml-1.5 rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
+                      {Object.keys(dispoRules).length} changed
+                    </span>
+                  )}
+                </p>
+                <button
+                  onClick={() => setDispoOpen((v) => !v)}
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50"
+                >
+                  {dispoOpen ? "Hide" : `Edit (${DISPOSITION_CATALOG.length})`}
+                </button>
+              </div>
               <p className="mt-0.5 text-xs text-slate-500">
-                How hard the server dials for each agent who is READY.
+                What each <b>disposition reason</b> an agent saves does to the lead.
+                This decides the next action, the retry timer and whether the lead
+                is ever offered again — it outranks the recycle rules above, which
+                only apply to calls no agent dispositioned.
+              </p>
+
+              {dispoOpen && (
+                <div className="mt-2 space-y-1.5">
+                  {DISPOSITION_CATALOG.map((d) => {
+                    const rule = dispoRuleFor(d.code);
+                    const changed = Boolean(dispoRules[d.code]);
+                    const timed = rule.action === "retry" || rule.action === "callback";
+                    return (
+                      <div
+                        key={d.code}
+                        className={
+                          "rounded-lg border px-2.5 py-2 text-xs " +
+                          (changed ? "border-indigo-300 bg-indigo-50/40" : "border-slate-200")
+                        }
+                      >
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="min-w-[5.5rem] font-semibold text-slate-800">
+                            {d.code}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-slate-500">
+                            {d.label}
+                          </span>
+                          <select
+                            value={rule.action}
+                            onChange={(e) =>
+                              setDispoField(d.code, "action", e.target.value as DispositionAction)
+                            }
+                            className="rounded-lg border border-slate-300 px-1.5 py-1"
+                          >
+                            <option value="retry">Retry</option>
+                            <option value="callback">Callback</option>
+                            <option value="skip">Skip (park)</option>
+                            <option value="close">Close</option>
+                            <option value="dnc">DNC</option>
+                          </select>
+                          <label className="flex items-center gap-1 text-slate-600">
+                            after
+                            <input
+                              type="number"
+                              min={0}
+                              max={525600}
+                              disabled={!timed}
+                              value={rule.delay_min ?? ""}
+                              onChange={(e) =>
+                                setDispoField(
+                                  d.code,
+                                  "delay_min",
+                                  e.target.value === "" ? null : Number(e.target.value),
+                                )
+                              }
+                              className="w-16 rounded-lg border border-slate-300 px-1.5 py-1 disabled:bg-slate-100 disabled:text-slate-400"
+                            />
+                            min
+                          </label>
+                          <label className="flex items-center gap-1 text-slate-600">
+                            max
+                            <input
+                              type="number"
+                              min={1}
+                              max={50}
+                              disabled={!timed}
+                              value={rule.max_attempts ?? ""}
+                              onChange={(e) =>
+                                setDispoField(
+                                  d.code,
+                                  "max_attempts",
+                                  e.target.value === "" ? null : Number(e.target.value),
+                                )
+                              }
+                              className="w-14 rounded-lg border border-slate-300 px-1.5 py-1 disabled:bg-slate-100 disabled:text-slate-400"
+                            />
+                          </label>
+                          {changed && (
+                            <button
+                              onClick={() =>
+                                setDispoRules((prev) => {
+                                  const next = { ...prev };
+                                  delete next[d.code];
+                                  return next;
+                                })
+                              }
+                              className="rounded-lg border border-slate-300 px-1.5 py-1 font-medium text-slate-600 hover:bg-white"
+                              title="Back to the default rule"
+                            >
+                              ↺
+                            </button>
+                          )}
+                        </div>
+                        <p className="mt-1 text-[11px] text-slate-500">{describeRule(rule)}</p>
+                      </div>
+                    );
+                  })}
+                  <p className="text-[11px] text-slate-400">
+                    Reasons under a code can differ from it — &ldquo;Number busy&rdquo;
+                    retries sooner than the rest of TNC, and a per-reason rule keeps
+                    winning unless the code is changed here.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* ── Lead handling — every mode has these ── */}
+            <div className="mt-4 border-t border-slate-100 pt-3">
+              <p className="text-sm font-medium text-slate-700">Lead handling</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                How this campaign works its leads, whoever places the call.
               </p>
               <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                <label className="flex flex-col gap-1">
-                  <span className="font-medium text-slate-600">
-                    Dial ratio (lines per agent)
-                  </span>
-                  <input
-                    type="number"
-                    step={0.1}
-                    min={1}
-                    max={10}
-                    value={dialRatio}
-                    onChange={(e) => setDialRatio(Number(e.target.value))}
-                    className="rounded-lg border border-slate-300 px-2 py-1.5"
-                  />
-                </label>
                 <label className="flex flex-col gap-1">
                   <span className="font-medium text-slate-600">
                     Max attempts per lead (0 = ∞)
@@ -1401,31 +1592,6 @@ export function CampaignManager({
                     className="rounded-lg border border-slate-300 px-2 py-1.5"
                   />
                 </label>
-                <label className="flex flex-col gap-1">
-                  <span className="font-medium text-slate-600">Max abandon %</span>
-                  <input
-                    type="number"
-                    step={0.5}
-                    min={0}
-                    max={100}
-                    value={maxAbandon}
-                    onChange={(e) => setMaxAbandon(Number(e.target.value))}
-                    className="rounded-lg border border-slate-300 px-2 py-1.5"
-                  />
-                </label>
-                <label className="col-span-2 flex flex-col gap-1">
-                  <span className="font-medium text-slate-600">
-                    Breather after a call (sec, 0 = none)
-                  </span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={600}
-                    value={wrapupSeconds}
-                    onChange={(e) => setWrapupSeconds(Number(e.target.value))}
-                    className="rounded-lg border border-slate-300 px-2 py-1.5"
-                  />
-                </label>
                 <label className="col-span-2 flex flex-col gap-1">
                   <span className="font-medium text-slate-600">Lead order</span>
                   <select
@@ -1452,11 +1618,124 @@ export function CampaignManager({
                   </span>
                 </label>
               </div>
-              {dialRatio > 1 && (
-                <p className="mt-1.5 text-xs text-amber-600">
-                  ⚠ Ratio above 1.0 over-dials: some answered calls may arrive
-                  with no free agent. The engine drops back to 1.0 automatically
-                  while the abandon rate is over {maxAbandon}%.
+            </div>
+
+            {/* ── Pacing — only the modes the SERVER dials for have any ──
+                 The controls follow src/lib/dialerModes.js, the same
+                 definition the API validates against and the engine paces
+                 by, so a setting can never be shown for a mode that would
+                 refuse to store it. */}
+            <div className="mt-4 border-t border-slate-100 pt-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-slate-700">
+                  {rulesMode === "predictive"
+                    ? "Predictive pacing"
+                    : rulesMode === "ratio"
+                      ? "Ratio dialing"
+                      : "Pacing"}
+                </p>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                  {labelFor(rulesMode)} mode
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">{describeMode(rulesMode)}</p>
+
+              {rulesMode === "predictive" && (
+                <>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                    <label className="flex flex-col gap-1">
+                      <span className="font-medium text-slate-600">
+                        Max lines per agent (ceiling)
+                      </span>
+                      <input
+                        type="number"
+                        step={0.1}
+                        min={1}
+                        max={10}
+                        value={dialRatio}
+                        onChange={(e) => setDialRatio(Number(e.target.value))}
+                        className="rounded-lg border border-slate-300 px-2 py-1.5"
+                      />
+                      <span className="text-[11px] text-slate-400">
+                        The engine computes the live figure; this is the most it
+                        may ever reach.
+                      </span>
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="font-medium text-slate-600">Max abandon %</span>
+                      <input
+                        type="number"
+                        step={0.5}
+                        min={0}
+                        max={100}
+                        value={maxAbandon}
+                        onChange={(e) => setMaxAbandon(Number(e.target.value))}
+                        className="rounded-lg border border-slate-300 px-2 py-1.5"
+                      />
+                      <span className="text-[11px] text-slate-400">
+                        Pacing is damped from {(maxAbandon * 0.75).toFixed(1)}% and
+                        drops to one line per agent above {maxAbandon}%.
+                      </span>
+                    </label>
+                    <label className="col-span-2 flex flex-col gap-1">
+                      <span className="font-medium text-slate-600">
+                        Breather after a call (sec, 0 = none)
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={600}
+                        value={wrapupSeconds}
+                        onChange={(e) => setWrapupSeconds(Number(e.target.value))}
+                        className="rounded-lg border border-slate-300 px-2 py-1.5"
+                      />
+                    </label>
+                  </div>
+                  {dialRatio > 1 && (
+                    <p className="mt-1.5 text-xs text-amber-600">
+                      ⚠ A ceiling above 1.0 lets the engine over-dial: some answered
+                      calls may arrive with no free agent. It only goes there when
+                      the measured answer rate says the agents will be free, and it
+                      backs off before {maxAbandon}% abandons.
+                    </p>
+                  )}
+                </>
+              )}
+
+              {rulesMode === "ratio" && (
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                  <label className="flex flex-col gap-1">
+                    <span className="font-medium text-slate-600">
+                      Lines per ready agent (fixed)
+                    </span>
+                    <input
+                      type="number"
+                      step={0.1}
+                      min={1}
+                      max={10}
+                      value={dialRatio}
+                      onChange={(e) => setDialRatio(Number(e.target.value))}
+                      className="rounded-lg border border-slate-300 px-2 py-1.5"
+                    />
+                  </label>
+                  <p className="self-end text-[11px] text-slate-400">
+                    Exactly this many lines per ready agent, every tick. Switch the
+                    campaign to Predictive if you want the figure computed.
+                  </p>
+                  {dialRatio > 1 && (
+                    <p className="col-span-2 text-xs text-amber-600">
+                      ⚠ Above 1.0 this over-dials with no forecast behind it. Only
+                      the global abandon cutoff will hold it back.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {rulesMode !== "predictive" && rulesMode !== "ratio" && (
+                <p className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 ring-1 ring-inset ring-slate-200">
+                  Nothing to pace — the server never places calls for a{" "}
+                  {labelFor(rulesMode)} campaign, so there is no line count, no
+                  abandon budget and no predictive engine running for it.
                 </p>
               )}
             </div>

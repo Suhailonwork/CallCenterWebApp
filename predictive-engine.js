@@ -1,11 +1,11 @@
 /* =====================================================================
- *  predictive-engine.js — VICIdial-style predictive / ratio dialer.
+ *  predictive-engine.js — VICIdial-style server-side dialer.
  *
  *  The loop, forever:
  *
  *    1. find READY agents per campaign          (agentRegistry)
- *    2. work out the campaign's dialing ratio   (dial_ratio, abandon-throttled)
- *    3. turn that into free dialing capacity    (ratio x agents - live lines,
+ *    2. work out how many lines to open         (per MODE — see below)
+ *    3. turn that into free dialing capacity    (target - live lines,
  *                                                capped by gateway channels)
  *    4. claim that many eligible leads          (dialEligibility, one txn)
  *    5. dial them through the gateway pool      (balancing + failover)
@@ -14,8 +14,28 @@
  *
  *  The server places the call; the agent only ever sees a customer who has
  *  already answered. Nothing is pre-bound: an agent is chosen at the moment
- *  the customer picks up, which is what makes over-dialing (ratio > 1)
- *  possible without stranding agents on ringing lines.
+ *  the customer picks up, which is what makes over-dialing possible without
+ *  stranding agents on ringing lines.
+ *
+ *  ---- MODE IS A CONTRACT (src/lib/dialerModes.js) ---------------------
+ *
+ *  MANUAL and INBOUND campaigns are never touched: the loop skips them
+ *  before claiming, before pacing and before dialing, and it removes their
+ *  agents from the pacing pool so a mode change takes effect on the very next
+ *  tick rather than when someone reloads a browser tab.
+ *
+ *  RATIO campaigns open a FIXED dial_ratio × ready-agents lines. No answer
+ *  rate, no handle time, no forecast — a ratio dialer that adapted would just
+ *  be a predictive dialer with a confusing name.
+ *
+ *  PREDICTIVE campaigns are the only ones that run the adaptive algorithm in
+ *  `predictiveCapacity()`: it forecasts how many agents will be free by the
+ *  time a fresh call is answered, divides by the measured answer rate to get
+ *  the lines needed, and holds itself under the campaign's abandon budget.
+ *
+ *  Every one of those rules is asserted at the point of use, not just at the
+ *  top of the loop, so no future call path can quietly dial for the wrong
+ *  kind of campaign.
  *
  *  Safety properties:
  *   · a customer is never called twice at once (per-phone in-flight lock)
@@ -38,6 +58,13 @@ const {
   parseDialStatuses,
   parseRecycleRules,
 } = require("./src/lib/leadStatus.js");
+const {
+  normalizeMode,
+  isEngineDriven,
+  isPredictive,
+  labelFor,
+} = require("./src/lib/dialerModes.js");
+const { predictiveTarget, ratioTarget } = require("./src/lib/pacing.js");
 const { buildClaimSelect } = require("./src/lib/dialEligibility.js");
 const { createDialerLog, EVENT } = require("./src/lib/dialerLog.js");
 const { createGatewayPool } = require("./src/lib/gatewayPool.js");
@@ -129,9 +156,9 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
     if (hit && Date.now() - hit.at < CAMPAIGN_TTL_MS) return hit.row;
     const [rows] = await db.query(
       `SELECT id, name, status, dialer_type, dial_statuses, recycle_rules,
-              retry_count, retry_delay_minutes, dial_ratio, dial_timeout_sec,
-              wrapup_seconds, lead_order, callbacks_enabled, max_abandon_pct,
-              recording_enabled, calling_start, calling_end
+              disposition_rules, retry_count, retry_delay_minutes, dial_ratio,
+              dial_timeout_sec, wrapup_seconds, lead_order, callbacks_enabled,
+              max_abandon_pct, recording_enabled, calling_start, calling_end
          FROM campaigns WHERE id = ?`,
       [campaignId],
     );
@@ -166,25 +193,88 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
 
   const normPhone = (p) => String(p || "").replace(/[^\d+]/g, "");
 
+  /**
+   * Rolling per-campaign measurements. These are the inputs the predictive
+   * algorithm forecasts from; a ratio campaign accumulates them too (they are
+   * what the dashboard reports) but never paces on them.
+   *
+   *   attempts    dials placed
+   *   answered    customers who picked up
+   *   abandoned   answered with no agent to take them
+   *   ringSec     dial -> answer, i.e. how far ahead a predictive dial must aim
+   *   handleSec   answer -> agent free again (talk + the wrap-up breather)
+   */
   function statsFor(campaignId) {
     let s = pacingStats.get(campaignId);
     if (!s) {
-      s = { answered: 0, abandoned: 0, since: Date.now() };
+      s = {
+        attempts: 0,
+        answered: 0,
+        abandoned: 0,
+        ringSecSum: 0,
+        ringSamples: 0,
+        handleSecSum: 0,
+        handleSamples: 0,
+        // The last pacing decision, so the live dashboard can show the figure
+        // the engine is actually applying rather than the configured one.
+        lastRatio: null,
+        lastTarget: null,
+        since: Date.now(),
+      };
       pacingStats.set(campaignId, s);
     }
-    // Roll the window every 15 minutes so an old spike stops throttling us.
+    // Roll the window every 15 minutes so an old spike stops throttling us,
+    // and so the averages track the shift the team is actually working.
     if (Date.now() - s.since > 15 * 60_000) {
+      s.attempts = Math.round(s.attempts / 2);
       s.answered = Math.round(s.answered / 2);
       s.abandoned = Math.round(s.abandoned / 2);
+      s.ringSecSum = Math.round(s.ringSecSum / 2);
+      s.ringSamples = Math.round(s.ringSamples / 2);
+      s.handleSecSum = Math.round(s.handleSecSum / 2);
+      s.handleSamples = Math.round(s.handleSamples / 2);
       s.since = Date.now();
     }
     return s;
   }
 
+  /** Samples below this are too thin to forecast from — pace progressively. */
+  const MIN_PACING_SAMPLES = 20;
+
   function abandonPct(campaignId) {
     const s = statsFor(campaignId);
     const total = s.answered + s.abandoned;
     return total < 10 ? 0 : (s.abandoned / total) * 100;
+  }
+
+  /**
+   * Share of dials a human picks up, over the rolling window.
+   *
+   * Returns 1 until there is enough evidence: a fresh campaign then opens one
+   * line per expected free agent (progressive), which is the only safe way to
+   * start — over-dialing on a guessed answer rate is what produces the burst
+   * of dropped calls at the top of a shift.
+   */
+  function answerRate(campaignId) {
+    const s = statsFor(campaignId);
+    if (s.attempts < MIN_PACING_SAMPLES) return 1;
+    const rate = s.answered / s.attempts;
+    // Floor it: a 2% answer rate would otherwise ask for 50 lines per agent.
+    return Math.min(1, Math.max(0.05, rate));
+  }
+
+  /** Mean seconds from dial to answer — how far ahead predictive must aim. */
+  function avgRingSec(campaignId) {
+    const s = statsFor(campaignId);
+    if (s.ringSamples < 5) return 12; // sane default until measured
+    return Math.max(1, s.ringSecSum / s.ringSamples);
+  }
+
+  /** Mean seconds an answered call keeps an agent busy (talk + wrap-up). */
+  function avgHandleSec(campaignId) {
+    const s = statsFor(campaignId);
+    if (s.handleSamples < 5) return 180;
+    return Math.max(5, s.handleSecSum / s.handleSamples);
   }
 
   function liveAttemptsFor(campaignId) {
@@ -216,6 +306,13 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
   async function claimLeads(campaign, want) {
     const campaignId = campaign.id;
 
+    // Mode guard, repeated at the point of use: claiming reserves the lead and
+    // takes it out of everyone else's queue, so a manual campaign must not
+    // reach this even if a future caller forgets the check in the loop.
+    if (!isEngineDriven(campaign.dialer_type)) {
+      return { leads: [], reason: "ModeNotEngineDriven" };
+    }
+
     const [listRows] = await db.query(
       "SELECT id FROM lists WHERE campaign_id = ? AND active = 'Y'",
       [campaignId],
@@ -227,6 +324,7 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
       listIds: listRows.map((l) => l.id),
       dialStatuses: parseDialStatuses(campaign.dial_statuses),
       recycleRules: parseRecycleRules(campaign.recycle_rules, campaign.retry_delay_minutes),
+      dispositionRules: campaign.disposition_rules,
       claimTimeoutSec: cfg.claimTimeoutSec,
       maxAttempts: Number(campaign.retry_count) || 0,
       leadOrder: campaign.lead_order,
@@ -280,8 +378,23 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
   async function dialLead(campaign, lead, opts) {
     const campaignId = campaign.id;
     const phone = normPhone(lead.phone_number);
-    const dialSource = (opts && opts.dialSource) || (campaign.dialer_type === "ratio" ? "ratio" : "predictive");
+    const mode = normalizeMode(campaign.dialer_type);
     const preferredAgentId = (opts && opts.preferredAgentId) || null;
+
+    // The last gate before a customer's phone rings. Anything that reaches
+    // here for a mode the server does not dial for is a bug, so it is logged
+    // loudly and refused rather than quietly skipped.
+    if (!isEngineDriven(mode)) {
+      log.error("refused to originate for a non-engine-driven campaign", null, {
+        campaign: campaignId,
+        mode,
+        lead: lead.id,
+      });
+      await W.cancelReservation(db, lead.id).catch(() => {});
+      return false;
+    }
+
+    const dialSource = (opts && opts.dialSource) || mode;
 
     log.log(EVENT.SELECTED, {
       leadId: lead.id,
@@ -406,6 +519,10 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
           ])
           .catch(() => {});
 
+        // One more line opened — the denominator of the answer rate the
+        // predictive forecast divides by.
+        statsFor(campaignId).attempts++;
+
         log.log(EVENT.DIAL_STARTED, {
           leadId: lead.id,
           campaignId,
@@ -491,7 +608,13 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
     if (!a || a.state === "ended") return null;
     a.state = "answered";
     a.answeredAt = Date.now();
-    statsFor(a.campaignId).answered++;
+    const ringSec = (a.answeredAt - a.startedAt) / 1000;
+    const stats = statsFor(a.campaignId);
+    stats.answered++;
+    // How long a dial takes to reach a human: the horizon the predictive
+    // forecast aims at.
+    stats.ringSecSum += ringSec;
+    stats.ringSamples++;
 
     await W.markCallAnswered(db, a.callId);
     log.log(EVENT.ANSWERED, {
@@ -599,6 +722,17 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
     // A call the agent actually took stays CONNECTED and claimed until the
     // wrap-up is saved — the disposition route owns the final word on it.
     if (bridged && a.agentId) {
+      // Handle time = how long this call kept a seat occupied: the talk time
+      // plus the wrap-up breather the campaign gives afterwards. It is what
+      // the predictive forecast uses to tell which agents are about to free
+      // up, so it is sampled from the real call rather than configured.
+      const talkSec = (Date.now() - (a.connectedAt || a.answeredAt || Date.now())) / 1000;
+      const campaignForHandle = await campaignConfig(a.campaignId).catch(() => null);
+      const wrapSec = Number(campaignForHandle && campaignForHandle.wrapup_seconds) || 0;
+      const hs = statsFor(a.campaignId);
+      hs.handleSecSum += talkSec + wrapSec;
+      hs.handleSamples++;
+
       await W.finishCallRecord(db, a.callId, {
         status,
         leadStatus: LEAD_STATUS.CONNECTED,
@@ -858,30 +992,191 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
   }
 
   /**
-   * How many new lines this campaign may open right now.
-   * ratio 1.00 keeps one live line per ready agent (progressive, zero
-   * abandons); above 1 the engine over-dials and the abandon rate throttles it
-   * back automatically.
+   * Take a campaign's agents out of the pacing pool because the campaign is
+   * not (or is no longer) one the server dials for.
+   *
+   * A READY agent means "the engine may open a line for me". On a manual or
+   * inbound campaign that is a lie: nobody will ever dial for them and they
+   * would sit there forever counting as capacity in the dashboard. Moving
+   * them to PAUSE is the honest state, and the client is told why so the
+   * Dialer can drop out of auto mode without a reload.
+   *
+   * Agents on a live call are left alone — a mode change must never cut off a
+   * customer who is mid-conversation.
    */
-  async function capacityFor(campaign, readyCount) {
-    if (readyCount <= 0) return { slots: 0, reason: "NoReadyAgents", ratio: 0 };
+  function releasePacingPool(campaignId, mode) {
+    const ready = registry.readyFor(campaignId);
+    if (ready.length === 0) return;
+    for (const a of ready) {
+      registry.setState(a.id, AGENT_STATE.PAUSE, { reason: "mode-not-engine-driven" });
+      io.to("agent:" + a.id).emit("dialer-mode-changed", {
+        campaignId,
+        dialerType: mode,
+        reason:
+          `${labelFor(mode)} campaigns are dialled by the agent, so the ` +
+          `auto-dialer has stopped opening lines for you.`,
+      });
+    }
+    log.info("pacing pool released", {
+      campaign: campaignId,
+      mode,
+      agents: ready.length,
+      reason: "ModeNotEngineDriven",
+    });
+  }
 
-    const configured = Math.max(1, Number(campaign.dial_ratio) || cfg.ratio || 1);
-    const limitPct = Number(campaign.max_abandon_pct) || cfg.maxAbandonPct;
-    const abandoning = abandonPct(campaign.id);
-    // Over the abandon budget: fall back to progressive until it recovers.
-    const ratio = abandoning > limitPct ? 1 : configured;
+  /**
+   * Agents whose current call is expected to be over within `horizonSec`.
+   *
+   * This is the forecast at the heart of predictive dialing: a call dialled
+   * now reaches a human in about one ring cycle, so the agents it should be
+   * aimed at are the ones who will be free by then — not only the ones idle
+   * this instant. An agent INCALL for `t` seconds is expected free in
+   * `avgHandle - t`.
+   *
+   * WRAPUP seats count the same way: the wrap-up form is the tail of the
+   * handle time, and an agent who is 90% through it will be ready long before
+   * a call dialled now is answered.
+   */
+  function agentsFreeingWithin(campaignId, horizonSec) {
+    const handle = avgHandleSec(campaignId);
+    const now = Date.now();
+    let n = 0;
+    for (const a of registry.staffedFor(campaignId)) {
+      if (a.agentState !== AGENT_STATE.INCALL && a.agentState !== AGENT_STATE.WRAPUP) continue;
+      const busyFor = (now - a.since) / 1000;
+      const remaining = handle - busyFor;
+      // Already past the average: treat as freeing now, not as never freeing.
+      if (remaining <= horizonSec) n++;
+    }
+    return n;
+  }
 
-    const target = Math.max(1, Math.floor(readyCount * ratio));
-    const live = liveAttemptsFor(campaign.id);
+  /**
+   * PREDICTIVE pacing — the adaptive algorithm. Runs for `predictive`
+   * campaigns and nothing else (asserted by the caller and again here).
+   *
+   * Every second:
+   *
+   *   1. forecast the agents free when a call dialled now would be answered
+   *          expectedFree = ready + agents finishing within one ring cycle
+   *   2. divide by the measured answer rate to get the lines that produces
+   *          linesNeeded = expectedFree / answerRate
+   *   3. hold it under the abandon budget — the governor below
+   *   4. never exceed the campaign's dial_ratio, which is a CEILING here
+   *   5. subtract the lines already in flight, then cap by gateway channels
+   *
+   * The abandon governor is proportional rather than a cliff: inside 75% of
+   * the budget the forecast is used as-is, between 75% and 100% it is damped
+   * linearly toward progressive, and over budget the campaign dials strictly
+   * one line per ready agent until the rate recovers. That keeps a campaign
+   * legal without the sawtooth of an on/off throttle.
+   */
+  async function predictiveCapacity(campaign, paceable) {
+    const campaignId = campaign.id;
+    if (!isPredictive(campaign.dialer_type)) {
+      // Unreachable by design — the dispatcher below refuses first. Kept as a
+      // hard stop so no future call path can slip adaptive pacing into a
+      // ratio or manual campaign.
+      return { slots: 0, reason: "NotPredictiveMode", ratio: 0 };
+    }
+
+    const readyCount = paceable.length;
+    const ringSec = avgRingSec(campaignId);
+    const freeingSoon = agentsFreeingWithin(campaignId, ringSec);
+    const expectedFree = readyCount + freeingSoon;
+    if (expectedFree <= 0) {
+      return { slots: 0, reason: "NoReadyAgents", ratio: 0, ready: readyCount };
+    }
+
+    const rate = answerRate(campaignId);
+    const abandoning = abandonPct(campaignId);
+
+    // The forecast itself is pure arithmetic and lives in src/lib/pacing.js,
+    // where it can be read and tested without a switch or a database.
+    const { target, ratio, governor } = predictiveTarget({
+      ready: readyCount,
+      freeingSoon,
+      answerRate: rate,
+      ceiling: Number(campaign.dial_ratio) || cfg.ratio || 1,
+      abandonPct: abandoning,
+      maxAbandonPct: Number(campaign.max_abandon_pct) || cfg.maxAbandonPct,
+    });
+
+    const live = liveAttemptsFor(campaignId);
     let slots = target - live;
-    if (slots <= 0) return { slots: 0, reason: "AtCapacity", ratio, live, target };
+    const detail = {
+      ratio: Number(ratio.toFixed(2)),
+      live,
+      target,
+      ready: readyCount,
+      freeingSoon,
+      answerRate: Number(rate.toFixed(2)),
+      ringSec: Math.round(ringSec),
+      handleSec: Math.round(avgHandleSec(campaignId)),
+      abandonPct: abandoning,
+      governed: governor < 1,
+    };
+    if (slots <= 0) return { slots: 0, reason: "AtCapacity", ...detail };
 
-    const gwFree = await gateways.capacityForCampaign(campaign.id);
-    if (gwFree === 0) return { slots: 0, reason: "NoGatewayChannels", ratio, live, target };
+    const gwFree = await gateways.capacityForCampaign(campaignId);
+    if (gwFree === 0) return { slots: 0, reason: "NoGatewayChannels", ...detail };
     if (gwFree !== Infinity) slots = Math.min(slots, gwFree);
 
-    return { slots, reason: null, ratio, live, target, abandonPct: abandoning };
+    return { slots, reason: null, ...detail };
+  }
+
+  /**
+   * RATIO pacing — fixed, and deliberately blind.
+   *
+   * dial_ratio lines per READY agent, every tick, whatever the answer rate or
+   * the handle time happen to be. No forecast is made and no statistic is
+   * consulted: that is the difference between a ratio dialer and a predictive
+   * one, and it is why the two are separate functions rather than one function
+   * with a flag.
+   *
+   * The one thing that can hold it back is the global abandon cutoff, which is
+   * a compliance stop rather than pacing: over the limit the campaign drops to
+   * one line per agent until the rate recovers. It never raises the ratio and
+   * never computes a new one.
+   */
+  async function ratioCapacity(campaign, paceable) {
+    const campaignId = campaign.id;
+    const readyCount = paceable.length;
+    if (readyCount <= 0) return { slots: 0, reason: "NoReadyAgents", ratio: 0, ready: 0 };
+
+    const abandoning = abandonPct(campaignId);
+    // Compliance cutoff only — dropping calls without limit is not something a
+    // campaign may configure its way out of.
+    const overBudget = abandoning > cfg.maxAbandonPct;
+    const { target, ratio } = ratioTarget({
+      ready: readyCount,
+      ratio: Number(campaign.dial_ratio) || cfg.ratio || 1,
+      overBudget,
+    });
+
+    const live = liveAttemptsFor(campaignId);
+    let slots = target - live;
+    const detail = { ratio, live, target, ready: readyCount, abandonPct: abandoning, governed: overBudget };
+    if (slots <= 0) return { slots: 0, reason: "AtCapacity", ...detail };
+
+    const gwFree = await gateways.capacityForCampaign(campaignId);
+    if (gwFree === 0) return { slots: 0, reason: "NoGatewayChannels", ...detail };
+    if (gwFree !== Infinity) slots = Math.min(slots, gwFree);
+
+    return { slots, reason: null, ...detail };
+  }
+
+  /**
+   * How many new lines this campaign may open right now, chosen by MODE.
+   * This is the only place either pacing model is entered.
+   */
+  async function capacityFor(campaign, paceable) {
+    const mode = normalizeMode(campaign.dialer_type);
+    if (!isEngineDriven(mode)) return { slots: 0, reason: "ModeNotEngineDriven", ratio: 0 };
+    return isPredictive(mode)
+      ? predictiveCapacity(campaign, paceable)
+      : ratioCapacity(campaign, paceable);
   }
 
   /* ---------------- the loop ---------------- */
@@ -909,9 +1204,18 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
         const campaign = await campaignConfig(campaignId);
         if (!campaign) continue;
 
-        // Manual and inbound campaigns are agent-driven; the engine never
-        // originates for them.
-        if (campaign.dialer_type !== "predictive" && campaign.dialer_type !== "ratio") continue;
+        // MODE GATE. Manual and inbound campaigns are agent-driven: the engine
+        // never originates, never claims and never paces for them.
+        //
+        // Agents signed on to one are also taken out of the pacing pool here
+        // rather than being left READY — that is what makes a mode change take
+        // effect on the next tick instead of the next browser reload, and it
+        // stops a campaign that was switched to Manual from still looking like
+        // dialable capacity.
+        if (!isEngineDriven(campaign.dialer_type)) {
+          releasePacingPool(campaignId, campaign.dialer_type);
+          continue;
+        }
         if (campaign.status !== "active") {
           log.info("campaign skipped", { campaign: campaignId, reason: "CampaignNotActive" });
           continue;
@@ -926,11 +1230,17 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
         }
 
         const paceable = paceableAgents(campaign, registry.readyFor(campaignId));
-        const cap = await capacityFor(campaign, paceable.length);
+        const cap = await capacityFor(campaign, paceable);
+        if (cap.ratio != null) {
+          const s = statsFor(campaignId);
+          s.lastRatio = cap.ratio;
+          s.lastTarget = cap.target ?? null;
+        }
         if (cap.slots <= 0) {
           if (counts.ready > 0 && cap.reason !== "AtCapacity") {
             log.info("no capacity", {
               campaign: campaignId,
+              mode: campaign.dialer_type,
               reason: cap.reason,
               ready: counts.ready,
               paceable: paceable.length,
@@ -962,6 +1272,7 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
 
         log.info("pacing", {
           campaign: campaignId,
+          mode: campaign.dialer_type,
           ready: counts.ready,
           incall: counts.incall,
           wrapup: counts.wrapup,
@@ -970,6 +1281,17 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
           live: cap.live,
           dialed: placed,
           abandonPct: (cap.abandonPct || 0).toFixed(1),
+          // Predictive-only forecast inputs; absent on a ratio campaign
+          // because a ratio campaign never consults them.
+          ...(isPredictive(campaign.dialer_type)
+            ? {
+                answerRate: cap.answerRate,
+                freeingSoon: cap.freeingSoon,
+                ringSec: cap.ringSec,
+                handleSec: cap.handleSec,
+                governed: cap.governed,
+              }
+            : {}),
         });
       }
     } catch (e) {
@@ -1049,6 +1371,30 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
       tick().catch((e) => log.error("kick tick rejected", e));
     },
 
+    /**
+     * The campaign's dialer mode, read fresh enough to enforce with.
+     *
+     * server.mjs asks before it puts an agent into the pacing pool, so an
+     * agent can never register as dialable capacity on a manual or inbound
+     * campaign — not even with a hand-crafted socket message.
+     *
+     * @returns {Promise<'predictive'|'ratio'|'manual'|'inbound'|null>}
+     */
+    async campaignMode(campaignId) {
+      const id = Number(campaignId);
+      if (!Number.isInteger(id) || id <= 0) return null;
+      const c = await campaignConfig(id).catch(() => null);
+      return c ? normalizeMode(c.dialer_type) : null;
+    },
+
+    /** Does the SERVER place calls for this campaign? @returns {Promise<boolean>} */
+    async campaignIsEngineDriven(campaignId) {
+      const mode = await this.campaignMode(campaignId);
+      // Unknown campaign: refuse. Pacing for a campaign we cannot read the
+      // mode of is exactly the situation this guard exists to prevent.
+      return mode == null ? false : isEngineDriven(mode);
+    },
+
     /** Everything the live dashboard needs, straight from memory. */
     snapshot() {
       const live = [];
@@ -1069,11 +1415,25 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
       }
       const campaigns = [];
       for (const [campaignId, s] of pacingStats) {
+        const cached = campaignCache.get(campaignId);
+        const mode = cached && cached.row ? normalizeMode(cached.row.dialer_type) : null;
         campaigns.push({
           campaignId,
+          mode,
+          attempts: s.attempts,
           answered: s.answered,
           abandoned: s.abandoned,
           abandonPct: Number(abandonPct(campaignId).toFixed(2)),
+          // The forecast inputs, so the live dashboard can show WHY the
+          // engine is pacing the way it is. Only meaningful for predictive
+          // campaigns; a ratio campaign never reads them.
+          answerRate: mode === "predictive" ? Number(answerRate(campaignId).toFixed(2)) : null,
+          avgRingSec: mode === "predictive" ? Math.round(avgRingSec(campaignId)) : null,
+          avgHandleSec: mode === "predictive" ? Math.round(avgHandleSec(campaignId)) : null,
+          // What the engine last decided to run at — for a predictive campaign
+          // this is the computed figure, not campaigns.dial_ratio.
+          pacedRatio: s.lastRatio,
+          pacedTarget: s.lastTarget,
           live: liveAttemptsFor(campaignId),
           ...registry.countsFor(campaignId),
         });

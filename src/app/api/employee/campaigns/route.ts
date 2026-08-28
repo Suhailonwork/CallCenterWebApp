@@ -14,7 +14,8 @@ export async function GET() {
   if (isError(user)) return user;
 
   const campaigns = await query<any>(
-    `SELECT DISTINCT c.id, c.name, c.description, c.script, c.status, c.dialer_type
+    `SELECT DISTINCT c.id, c.name, c.description, c.script, c.status, c.dialer_type,
+            c.disposition_rules
        FROM campaigns c
        JOIN group_agents ga ON ga.group_id = c.group_id AND ga.agent_id = ?
       WHERE c.status = 'active'

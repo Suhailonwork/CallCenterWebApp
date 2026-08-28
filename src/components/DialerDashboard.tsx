@@ -53,6 +53,12 @@ interface CampaignRow {
   wrapup: number;
   pause: number;
   abandon_pct: number;
+  /** The mode the engine is applying; null when it paces nothing for this one. */
+  paced_by: string | null;
+  /** The pace actually in use — computed for predictive, fixed for ratio. */
+  paced_ratio: number | null;
+  answer_rate: number | null;
+  avg_handle_sec: number | null;
 }
 
 interface GatewayRow {
@@ -434,7 +440,7 @@ export function DialerDashboard() {
               <tr className="text-left text-xs uppercase tracking-wide text-slate-400">
                 <th className="pb-2 font-semibold">Campaign</th>
                 <th className="pb-2 font-semibold">Mode</th>
-                <th className="pb-2 text-right font-semibold">Ratio</th>
+                <th className="pb-2 text-right font-semibold">Lines / agent</th>
                 <th className="pb-2 text-right font-semibold">Agents</th>
                 <th className="pb-2 text-right font-semibold">Live</th>
                 <th className="pb-2 text-right font-semibold">Fresh</th>
@@ -449,8 +455,25 @@ export function DialerDashboard() {
                 <tr key={c.id}>
                   <td className="py-2 font-medium text-slate-800">{c.name}</td>
                   <td className="py-2 text-xs text-slate-500">{c.dialer_type}</td>
+                  {/* The engine's live figure, not the stored column: a
+                      predictive campaign computes its own and dial_ratio is
+                      only the ceiling, and nothing paces a manual or inbound
+                      campaign at all. */}
                   <td className="py-2 text-right tabular-nums text-slate-600">
-                    {Number(c.dial_ratio).toFixed(1)}
+                    {c.dialer_type === "predictive" || c.dialer_type === "ratio" ? (
+                      <>
+                        {(c.paced_ratio ?? Number(c.dial_ratio)).toFixed(1)}
+                        {c.dialer_type === "predictive" && (
+                          <span className="ml-1 text-[10px] text-slate-400">
+                            /{Number(c.dial_ratio).toFixed(1)} max
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-slate-300" title="The server does not dial for this mode">
+                        —
+                      </span>
+                    )}
                   </td>
                   <td className="py-2 text-right text-xs tabular-nums text-slate-600">
                     {c.ready}R / {c.incall}C / {c.wrapup}W
@@ -465,7 +488,11 @@ export function DialerDashboard() {
                   </td>
                   <td className="py-2 text-right tabular-nums text-slate-400">{c.finished}</td>
                   <td className="py-2 text-right tabular-nums text-slate-600">
-                    {Number(c.abandon_pct).toFixed(1)}%
+                    {c.dialer_type === "predictive" || c.dialer_type === "ratio" ? (
+                      `${Number(c.abandon_pct).toFixed(1)}%`
+                    ) : (
+                      <span className="text-slate-300">—</span>
+                    )}
                   </td>
                 </tr>
               ))}

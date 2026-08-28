@@ -371,10 +371,35 @@ function ruleForStatus(recycleRules, status) {
 }
 
 /**
+ * Retry ceiling for a disposition rule that names no max_attempts of its own.
+ *
+ * The claim query cannot compare against "unlimited", so both it
+ * (dispositionRetryTerms in dispositionRules.js) and this planner substitute
+ * the same number — otherwise "retry scheduled" could be a lie at the edge.
+ */
+const DISPOSITION_ATTEMPT_CEILING = 50;
+
+/** Parse a follow-up time from a Date, a MySQL DATETIME or an ISO string. */
+function toDate(v) {
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+  if (typeof v === "string" && v.trim()) {
+    const d = new Date(v.includes("T") ? v : v.replace(" ", "T"));
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
+/**
  * Decide what happens to a lead once an attempt has finished.
  *
  * Mirrors exactly what the claim query will later accept, so "retry scheduled"
  * in the log always means the lead really does come back.
+ *
+ * When the agent saved a DISPOSITION, its rule decides first: the disposition
+ * is the agent's reading of the conversation, and it outranks what the line
+ * happened to do. Only when there is no disposition (an unanswered attempt the
+ * engine finalises on its own) do the campaign's recycle rules decide alone.
+ * See dispositionRules.js for the rule vocabulary.
  *
  * @param {object} o
  * @param {string} o.status              status the attempt produced
@@ -383,6 +408,9 @@ function ruleForStatus(recycleRules, status) {
  * @param {number} o.callCount           csv_data.call_count INCLUDING this attempt
  * @param {number} [o.maxAttempts]       campaigns.retry_count (0 = unlimited)
  * @param {Date}   [o.now]
+ * @param {{action:string, status?:string|null, delay_min?:number|null,
+ *          max_attempts?:number|null}} [o.dispositionRule] from resolveDisposition()
+ * @param {Date|string} [o.followUpAt]   callback time the agent booked
  * @returns {{status:string, willRetry:boolean, nextRetryAt:Date|null, delayMin:number|null,
  *            reason:string, exhausted:boolean}}
  */
@@ -393,12 +421,18 @@ function planNextAttempt({
   callCount,
   maxAttempts,
   now,
+  dispositionRule,
+  followUpAt,
 }) {
-  const s = normalizeStatus(status);
   const at = now instanceof Date ? now : new Date();
   const attempts = Number(recycleAttempts) || 0;
   const calls = Number(callCount) || 0;
   const cap = Number(maxAttempts) || 0; // 0 = unlimited
+
+  // The disposition names the status the lead rests on; without one, the
+  // status the line produced stands.
+  const rule = dispositionRule || null;
+  const s = normalizeStatus(rule && rule.status ? rule.status : status);
 
   const none = (reason, finalStatus, exhausted) => ({
     status: finalStatus || s,
@@ -412,6 +446,62 @@ function planNextAttempt({
   // A hard-banned status can never come back, whatever is configured.
   if (NON_REDIALABLE_STATUSES.includes(s)) return none("non-redialable", s, true);
 
+  if (rule) {
+    switch (rule.action) {
+      case "dnc":
+        return none("disposition-dnc", LEAD_STATUS.DNC, true);
+
+      case "close":
+        return none(
+          "disposition-close",
+          TERMINAL_STATUSES.includes(s) ? s : LEAD_STATUS.COMPLETED,
+          true,
+        );
+
+      case "skip":
+        return none("disposition-skip", s, false);
+
+      case "callback": {
+        // An appointment the agent promised the customer. It outranks the
+        // campaign's attempt cap — the same reading the engine already takes
+        // when it injects a due callback ahead of everything else.
+        const booked = toDate(followUpAt);
+        const delay = rule.delay_min == null ? 60 : rule.delay_min;
+        const nextRetryAt = booked && booked > at ? booked : new Date(at.getTime() + delay * 60_000);
+        return {
+          status: LEAD_STATUS.CALLBACK,
+          willRetry: true,
+          nextRetryAt,
+          delayMin: booked ? Math.max(0, Math.round((booked.getTime() - at.getTime()) / 60_000)) : delay,
+          reason: "disposition-callback",
+          exhausted: false,
+        };
+      }
+
+      case "retry":
+      default: {
+        // A campaign-level cap on total attempts still wins — the lead is done.
+        if (cap > 0 && calls >= cap) {
+          return none("max-attempts-reached", LEAD_STATUS.COMPLETED, true);
+        }
+        // No delay of its own: fall through to the campaign's recycle rules
+        // for the status this disposition lands on.
+        if (rule.delay_min == null) break;
+        const max =
+          rule.max_attempts == null ? DISPOSITION_ATTEMPT_CEILING : rule.max_attempts;
+        if (attempts >= max) return none("disposition-attempts-exhausted", s, false);
+        return {
+          status: s,
+          willRetry: true,
+          nextRetryAt: new Date(at.getTime() + rule.delay_min * 60_000),
+          delayMin: rule.delay_min,
+          reason: "disposition-retry",
+          exhausted: false,
+        };
+      }
+    }
+  }
+
   // A normally-final status rests here unless the campaign explicitly wrote a
   // recycle rule for it. With a rule it falls through and is treated like any
   // other status, so the claim query and this planner agree on who comes back.
@@ -424,20 +514,20 @@ function planNextAttempt({
     return none("max-attempts-reached", LEAD_STATUS.COMPLETED, true);
   }
 
-  const rule = ruleForStatus(recycleRules, s);
-  if (!rule) return none("no-recycle-rule", s, false);
+  const recycleRule = ruleForStatus(recycleRules, s);
+  if (!recycleRule) return none("no-recycle-rule", s, false);
 
   // Same comparison the claim query uses, so the two can never disagree.
-  if (attempts >= rule.max_attempts) {
+  if (attempts >= recycleRule.max_attempts) {
     return none("recycle-attempts-exhausted", s, false);
   }
 
-  const nextRetryAt = new Date(at.getTime() + rule.delay_min * 60_000);
+  const nextRetryAt = new Date(at.getTime() + recycleRule.delay_min * 60_000);
   return {
     status: s,
     willRetry: true,
     nextRetryAt,
-    delayMin: rule.delay_min,
+    delayMin: recycleRule.delay_min,
     reason: "retry-scheduled",
     exhausted: false,
   };
@@ -462,6 +552,7 @@ module.exports = {
   NON_REDIALABLE_STATUSES,
   DEFAULT_DIAL_STATUSES,
   DEFAULT_RECYCLE_RULES,
+  DISPOSITION_ATTEMPT_CEILING,
   normalizeStatus,
   isTerminal,
   isInFlight,

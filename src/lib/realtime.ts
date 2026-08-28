@@ -71,9 +71,19 @@ export interface DialerSnapshot {
   }[];
   campaigns: {
     campaignId: number;
+    /** The dialing mode the engine is actually applying right now. */
+    mode: 'predictive' | 'ratio' | 'manual' | 'inbound' | null;
+    attempts: number;
     answered: number;
     abandoned: number;
     abandonPct: number;
+    /** Forecast inputs — non-null only for predictive campaigns. */
+    answerRate: number | null;
+    avgRingSec: number | null;
+    avgHandleSec: number | null;
+    /** The pace the engine last applied (computed, not configured). */
+    pacedRatio: number | null;
+    pacedTarget: number | null;
     live: number;
     ready: number;
     incall: number;

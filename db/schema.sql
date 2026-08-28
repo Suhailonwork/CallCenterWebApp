@@ -144,6 +144,7 @@ CREATE TABLE campaigns (
                         COMMENT 'Fallback retry delay used when a recycle rule omits delay_min',
   dial_statuses       JSON NULL COMMENT 'Lead statuses the dialer may claim (JSON array); NULL = default NEW/NO_ANSWER/BUSY',
   recycle_rules       JSON NULL COMMENT 'Auto-retry rules: [{status, delay_min, max_attempts}]; NULL/[] = no recycling',
+  disposition_rules   JSON NULL COMMENT 'Overrides for the disposition dialing rules keyed by code: {"PTP":{action,delay_min,max_attempts,...}}; NULL = the defaults in src/lib/dispositionRules.js',
   -- ---- pacing (VICIdial-style predictive control) ----
   dial_ratio          DECIMAL(4,2) NOT NULL DEFAULT 1.00
                         COMMENT 'Lines dialled per READY agent (1.00 = progressive, >1 over-dials)',
@@ -268,6 +269,7 @@ CREATE TABLE calls (
   ended_at         DATETIME NULL,
   hangup_cause     VARCHAR(64) NULL COMMENT 'Asterisk hangup cause / internal reason',
   disposition      VARCHAR(32) NULL COMMENT 'Agent disposition code (PTP, PAID, CB, ...)',
+  disposition_reason VARCHAR(120) NULL COMMENT 'Reason picked under that code — what the dialing rule keyed on',
   lead_status      VARCHAR(32) NULL COMMENT 'Lead status this attempt produced',
   channel_id       VARCHAR(80) NULL COMMENT 'ARI channel id of the customer leg',
   recording_url    VARCHAR(255) NULL,

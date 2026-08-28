@@ -7,7 +7,8 @@ workflow behind them was rebuilt.
 Apply with:
 
 ```bash
-npm run db:migrate:vicidial   # additive + idempotent, safe on a live database
+npm run db:migrate:vicidial       # additive + idempotent, safe on a live database
+npm run db:migrate:dispositions   # disposition-driven dialing rules (§4a)
 ```
 
 ---
@@ -17,6 +18,10 @@ npm run db:migrate:vicidial   # additive + idempotent, safe on a live database
 Every contact lives in `csv_data` and moves through one state machine. This is
 defined once, in [`src/lib/leadStatus.js`](src/lib/leadStatus.js), and every
 component reads it from there.
+
+Which of these steps the server performs at all depends on the campaign's
+**dialer mode** — see §3, which is the contract the rest of this document
+assumes.
 
 ```
 NEW ──▶ QUEUED ──▶ DIALING ──▶ RINGING ──┬─▶ CONNECTED ──▶ (wrap-up)
@@ -102,41 +107,107 @@ Crashes are handled by `recoverStaleLeads`, which runs at startup and every 15s:
 
 ---
 
-## 3. The predictive engine
+## 3. Dialer modes — the engine's contract
 
-[`predictive-engine.js`](predictive-engine.js), one tick per second:
+`campaigns.dialer_type` decides who dials and how the pace is chosen. It is not
+a label: [`src/lib/dialerModes.js`](src/lib/dialerModes.js) is the one
+definition, and the UI, the API and the engine all read it.
 
-1. **Find READY agents** per campaign (`agentRegistry`).
-2. **Work out the ratio** — `campaigns.dial_ratio`, throttled to 1.0 while the
-   abandon rate is over `campaigns.max_abandon_pct`.
-3. **Turn that into capacity** — `ratio × agents − live lines`, capped by the
-   free gateway channels.
-4. **Claim that many leads** in one transaction, writing them to `QUEUED`.
-5. **Dial them** through the gateway pool.
-6. **Update lead + call history immediately** at every step.
+| Mode | Who dials | Lines opened | Pacing settings it owns |
+|---|---|---|---|
+| **manual** | the agent | one, when they press Call | none |
+| **inbound** | the customer | none | none |
+| **ratio** | the server | **fixed**: `dial_ratio` × ready agents | `dial_ratio` |
+| **predictive** | the server | **computed** every tick (§3.1) | `dial_ratio` (ceiling), `max_abandon_pct`, `wrapup_seconds` |
 
-Nothing is pre-bound to an agent. The agent is chosen at the moment the customer
-answers — that is what makes over-dialing safe. `dial_ratio = 1.00` (the
-default) opens exactly one line per ready agent, so there are no abandons at
-all; above 1 the engine over-dials and backs itself off automatically.
+**Ratio dialing is not predictive dialing.** A ratio campaign opens exactly the
+number of lines it was configured to open and consults no statistic; only a
+predictive campaign measures its queue and changes its own pace. They are
+separate functions, not one function with a flag.
 
-Also in the loop: per-phone in-flight locks, a per-number cooldown, callback
-injection, agent-seat recovery and stale-attempt recovery.
+**The mode is enforced, not assumed.** Four independent gates, so no path can
+dial for a campaign that did not ask for it:
+
+1. the tick skips a campaign that is not engine-driven, *and* moves its agents
+   out of the pacing pool (see below);
+2. `claimLeads` refuses to reserve leads for one;
+3. `dialLead` refuses to originate and logs it as a bug if it is ever reached;
+4. `agent-available` / `agent-state` on the socket refuse to put an agent into
+   READY on a manual or inbound campaign — a hand-crafted socket message cannot
+   turn a manual campaign into a dialable one.
+
+**Changing the mode takes effect immediately.** Saving kicks the engine, which
+drops its campaign cache; on the next tick a campaign that is no longer
+engine-driven has its READY agents moved to PAUSE and their browsers told why
+(`dialer-mode-changed`), so nobody sits waiting for a call that will never
+come. Agents already on a call are left alone — a mode change never cuts off a
+live conversation. Pacing columns a mode does not own are refused by the API
+with an explanatory error and are not shown in the UI.
+
+### 3.1 Predictive pacing (predictive mode only)
+
+The question a predictive dialer answers is not "how many agents are free" but
+"how many will be free when a call placed now is answered". Every second, in
+[`src/lib/pacing.js`](src/lib/pacing.js):
+
+```
+expectedFree = READY agents + agents whose call ends within one ring cycle
+lines        = expectedFree ÷ measured answer rate
+lines        = governor(lines)                 ← abandon budget
+target       = min(lines, READY × dial_ratio)  ← the operator's ceiling
+slots        = target − lines already live     ← then capped by gateway channels
+```
+
+Everything on the right is measured, not configured, over a 15-minute rolling
+window per campaign: **answer rate** (answered ÷ attempts), **ring time** (dial
+→ answer, the horizon the forecast aims at) and **handle time** (talk + the
+wrap-up breather, which is how it knows who is about to free up).
+
+The **abandon governor** is proportional rather than a switch: inside 75% of
+`max_abandon_pct` the forecast is used as measured, from there to the limit it
+is damped linearly toward progressive, and over the limit the campaign dials
+exactly one line per ready agent until it recovers. A campaign therefore slows
+down *before* it breaks its target instead of oscillating around it.
+
+Two floors keep it safe: an idle agent always gets a call whatever the
+statistics say, and a campaign with fewer than 20 attempts on record paces
+progressively rather than forecasting from noise.
+
+`dial_ratio` is a **ceiling** here, not the setting — the default of 1.00 means
+"never open more than one line per ready agent", so an existing campaign keeps
+behaving exactly as it did until someone raises it.
+
+### 3.2 Ratio pacing (ratio mode only)
+
+`dial_ratio` lines per READY agent, every tick, blind to the answer rate and
+the handle time. The only thing that can hold it back is the global abandon
+cutoff (`dialer_max_abandon_pct`), which is a compliance stop rather than
+pacing: over the limit the campaign drops to one line per agent, and it never
+raises or computes anything.
+
+### 3.3 The rest of the loop
+
+Nothing is pre-bound to an agent. The agent is chosen at the moment the
+customer answers — that is what makes over-dialing safe. Also in the loop:
+per-phone in-flight locks, a per-number cooldown, callback injection,
+agent-seat recovery and stale-attempt recovery.
 
 ### Campaign controls (Campaigns → Dial rules)
 
-| Setting | Column | Meaning |
-|---|---|---|
-| Dial statuses | `dial_statuses` | which lead statuses the dialer may claim |
-| Recycle rules | `recycle_rules` | `[{status, delay_min, max_attempts}]` |
-| Dial ratio | `dial_ratio` | lines per READY agent |
-| Max attempts | `retry_count` | total attempts per lead; 0 = unlimited |
-| Ring timeout | `dial_timeout_sec` | how long the customer's phone may ring |
-| Breather | `wrapup_seconds` | pause after a call before a new line is opened |
-| Max abandon % | `max_abandon_pct` | over this, the ratio drops to 1.0 |
-| Lead order | `lead_order` | oldest / newest / least-recently-called / random |
-| Callbacks | `callbacks_enabled` | feed due callbacks into the queue |
-| Calling window | `calling_start` / `calling_end` | may wrap past midnight |
+| Setting | Column | Applies to | Meaning |
+|---|---|---|---|
+| Dial statuses | `dial_statuses` | all | which lead statuses the dialer may claim |
+| Recycle rules | `recycle_rules` | all | `[{status, delay_min, max_attempts}]` |
+| Disposition rules | `disposition_rules` | all | overrides for §4a, keyed by code; NULL = defaults |
+| Max attempts | `retry_count` | all | total attempts per lead; 0 = unlimited |
+| Ring timeout | `dial_timeout_sec` | all | how long the customer's phone may ring |
+| Lead order | `lead_order` | all | oldest / newest / least-recently-called / random |
+| Callbacks | `callbacks_enabled` | all | feed due callbacks into the queue |
+| Calling window | `calling_start` / `calling_end` | all | may wrap past midnight |
+| Max lines per agent | `dial_ratio` | predictive | the **ceiling** the forecast may not exceed |
+| Max abandon % | `max_abandon_pct` | predictive | where the governor damps and then stops over-dialing |
+| Breather | `wrapup_seconds` | predictive | pause after a call before a new line is opened |
+| Lines per ready agent | `dial_ratio` | ratio | the **fixed** number of lines, no forecast |
 
 Saving kicks the engine, so changes take effect in milliseconds.
 
@@ -156,6 +227,60 @@ either schedules the redial or closes the lead:
 `recycle_attempts` resets when the status *changes*, so each status gets its own
 retry budget — the same rule the claim query enforces, so "retry scheduled" in
 the log always means the lead really does come back.
+
+---
+
+## 4a. Disposition rules — what the agent's answer does to the lead
+
+A wrap-up produces two different things, and they are not the same thing:
+
+| | who picks it | what it means |
+|---|---|---|
+| **Call status** | the agent, in **manual** mode only | what the *line* did — connected, no answer, busy |
+| **Disposition reason** | the agent, in **every** mode | what the *conversation* meant — PTP, PAID, Wrong Number |
+
+In predictive and ratio mode the customer is already on the line when the
+screen pops, so there is no line result left to judge: the wrap-up hides Call
+Status and asks only for the disposition and the notes. The status is derived
+from the disposition server-side, so every mode writes the same columns.
+
+[`src/lib/dispositionRules.js`](src/lib/dispositionRules.js) is the one
+definition of the catalogue and of the rule each entry produces — the Dialer's
+dropdowns, the wrap-up API and the claim query all read it, so the agent is
+shown the rule that actually runs.
+
+Each rule is `{status, action, delay_min, max_attempts, requires_followup}`:
+
+| Action | What happens next |
+|---|---|
+| `retry` | back on the redial queue after `delay_min`, up to `max_attempts`. No delay of its own = fall through to the campaign's recycle rules |
+| `callback` | rests on `CALLBACK` and returns at the time the agent booked; a follow-up is required and the attempt cap does not apply — the agent promised this call |
+| `skip` | no retry is scheduled; the lead rests on its status and returns only if the campaign's own rules cover it |
+| `close` | terminal status, and the claim query refuses it from then on whatever the campaign dials |
+| `dnc` | hard stop; nothing may override it |
+
+**Reasons override codes.** The rule keys on the *reason*, not just the code:
+"Number busy" rests on `BUSY` and retries in 30 minutes while the rest of `TNC`
+rests on `NO_ANSWER`; `FRAUD-Fraud Case` closes the lead while the rest of
+`SKIP` only parks it.
+
+**Eligibility follows the rule too.** The claim query
+([`dialEligibility.js`](src/lib/dialEligibility.js)) gained two things:
+
+- a gate — `last_disposition` naming a closing rule is never offered again,
+  even on a campaign that recycles the status it rests on;
+- a branch — a lead comes back on its *disposition's* timer even when the
+  status it rests on has no recycle rule (a broken promise resting on
+  `CONNECTED`, say).
+
+Both use the same numbers `planNextAttempt` scheduled with, so the planner and
+the claim query cannot disagree. A list **RESET** clears `last_disposition`
+along with the other counters, so a reset really does revive every lead.
+
+**Per campaign.** `campaigns.disposition_rules` (Campaigns → Dial rules →
+Disposition rules) overrides any part of the catalogue; what a campaign leaves
+out keeps the default, and `NULL` means "all defaults". A campaign can make
+`WN` retryable or give `PTP` a different fallback delay without touching code.
 
 ---
 
@@ -206,7 +331,12 @@ are created for attempts that never reach an agent too (`employee_id` is NULL).
 
 Recorded: contact, campaign, list, gateway, agent, `started_at`, `answered_at`,
 `ended_at`, `ring_seconds`, `duration_seconds` (talk time), `hangup_cause`,
-`disposition`, `lead_status`, `dial_source`, `attempt_no`, `recording_url`.
+`disposition`, `disposition_reason`, `lead_status`, `dial_source`, `attempt_no`,
+`recording_url`.
+
+`disposition_reason` is stored next to the code because the code alone cannot
+explain a decision — "Number busy" and "Switch off" are both `TNC` but retry on
+different timers, and this column says which rule ran.
 
 The wrap-up **updates** the attempt's row rather than inserting a second one, so
 an attempt is never counted twice.

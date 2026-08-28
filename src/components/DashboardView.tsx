@@ -282,7 +282,9 @@ export function DashboardView({
   const today = new Date();
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-1">
+    // Wide on purpose: the dialer's customer panel below wants the whole
+    // screen, and the KPI row simply breathes more at this width.
+    <div className="mx-auto w-full max-w-[1700px] space-y-6 px-1">
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>

@@ -5,6 +5,7 @@ import {
   buildDialableCount,
 } from '@/lib/dialEligibility';
 import { IN_FLIGHT_STATUSES, TERMINAL_STATUSES, normalizeStatus } from '@/lib/leadStatus';
+import { blockedDispositionCodes, parseDispositionRules } from '@/lib/dispositionRules';
 
 /**
  * "Why is this campaign not dialing?" — answered with the engine's own
@@ -54,6 +55,7 @@ export interface DialableReport {
 export interface DialRuleOverrides {
   dialStatuses?: unknown;
   recycleRules?: unknown;
+  dispositionRules?: unknown;
   maxAttempts?: number;
 }
 
@@ -63,7 +65,7 @@ export async function dialableReport(
 ): Promise<DialableReport | null> {
   const campaign = await queryOne<any>(
     `SELECT id, name, status, dialer_type, dial_statuses, recycle_rules,
-            retry_count, retry_delay_minutes, lead_order
+            disposition_rules, retry_count, retry_delay_minutes, lead_order
        FROM campaigns WHERE id = ?`,
     [campaignId],
   );
@@ -80,6 +82,10 @@ export async function dialableReport(
     campaign.retry_delay_minutes,
   );
   const recycleStatuses = recycleRules.map((r: { status: string }) => r.status);
+  const dispositionRules =
+    overrides?.dispositionRules !== undefined
+      ? overrides.dispositionRules
+      : campaign.disposition_rules;
   const maxAttempts =
     overrides?.maxAttempts !== undefined
       ? Number(overrides.maxAttempts) || 0
@@ -180,6 +186,7 @@ export async function dialableReport(
     listIds,
     dialStatuses,
     recycleRules,
+    dispositionRules,
     claimTimeoutSec: 120,
     maxAttempts,
     leadOrder: campaign.lead_order,
@@ -201,6 +208,11 @@ export async function dialableReport(
   const terminal = TERMINAL_STATUSES.map(() => '?').join(',');
   const ruleList = recycleStatuses.length > 0 ? recycleStatuses.map(() => '?').join(',') : "''";
   const dialList = dialStatuses.length > 0 ? dialStatuses.map(() => '?').join(',') : "''";
+  // Leads an agent closed with a disposition: the claim query refuses them
+  // whatever their status, so they need their own bucket or the numbers below
+  // would blame the campaign's rules for a decision the agent made.
+  const blockedCodes = blockedDispositionCodes(parseDispositionRules(dispositionRules));
+  const blockedList = blockedCodes.length > 0 ? blockedCodes.map(() => '?').join(',') : "''";
 
   // Classified in the same precedence the claim query applies, so the buckets
   // add up against `dialable` instead of double-counting.
@@ -215,7 +227,8 @@ export async function dialableReport(
                     AND call_status NOT IN (${terminal})), 0)                    AS called_no_rule,
        COALESCE(SUM(called = 1 AND call_status IN (${ruleList})), 0)             AS called_with_rule,
        COALESCE(SUM(called = 0 AND call_status NOT IN (${dialList})
-                    AND call_status <> 'CALLBACK'), 0)                           AS fresh_not_ticked
+                    AND call_status <> 'CALLBACK'), 0)                           AS fresh_not_ticked,
+       COALESCE(SUM(last_disposition IN (${blockedList})), 0)                    AS closed_by_dispo
        FROM csv_data
       WHERE campaign_id = ? AND list_id IN (${ph})`,
     [
@@ -227,6 +240,7 @@ export async function dialableReport(
       ...TERMINAL_STATUSES,
       ...recycleStatuses,
       ...dialStatuses,
+      ...blockedCodes,
       campaignId,
       ...listIds,
     ],
@@ -292,6 +306,16 @@ export async function dialableReport(
         reason: 'Closed for good',
         count: n('terminal'),
         detail: 'Completed / Wrong Number / DNC. Only a RESET revives them.',
+        action: 'reset',
+      });
+    }
+    if (n('closed_by_dispo') > 0) {
+      blockers.push({
+        reason: 'Closed by the agent’s disposition',
+        count: n('closed_by_dispo'),
+        detail:
+          `Their last disposition (${blockedCodes.join(', ')}) closes a lead, so the ` +
+          `dialer will not offer them again. Only a RESET revives them.`,
         action: 'reset',
       });
     }

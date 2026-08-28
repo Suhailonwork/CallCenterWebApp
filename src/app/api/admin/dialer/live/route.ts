@@ -115,6 +115,14 @@ export async function GET() {
         wrapup: live?.wrapup ?? 0,
         pause: live?.pause ?? 0,
         abandon_pct: live?.abandonPct ?? 0,
+        // How this campaign is actually being paced right now. `paced_ratio` is
+        // the engine's own figure: for a predictive campaign it is computed and
+        // will differ from the configured dial_ratio (which is only a ceiling),
+        // and for manual/inbound it stays null because nothing paces them.
+        paced_by: live?.mode ?? null,
+        paced_ratio: live?.pacedRatio ?? null,
+        answer_rate: live?.answerRate ?? null,
+        avg_handle_sec: live?.avgHandleSec ?? null,
       };
     }),
     gateways: gateways.map((g: any) => {

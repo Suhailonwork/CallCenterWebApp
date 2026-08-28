@@ -17,6 +17,7 @@ const CLAIM_TIMEOUT_SEC = 120;
 interface CampaignRules {
   dial_statuses: unknown;
   recycle_rules: unknown;
+  disposition_rules: unknown;
   retry_count: number;
   retry_delay_minutes: number;
   lead_order: string;
@@ -67,7 +68,8 @@ export async function GET(req: Request) {
   // Campaign rules + active lists, read fresh so a list toggled OFF stops
   // handing out its leads immediately.
   const campaign = await queryOne<CampaignRules>(
-    `SELECT dial_statuses, recycle_rules, retry_count, retry_delay_minutes, lead_order
+    `SELECT dial_statuses, recycle_rules, disposition_rules, retry_count,
+            retry_delay_minutes, lead_order
        FROM campaigns WHERE id = ?`,
     [campaignId],
   );
@@ -84,6 +86,7 @@ export async function GET(req: Request) {
     listIds: lists.map((l) => l.id),
     dialStatuses: parseDialStatuses(campaign.dial_statuses),
     recycleRules: parseRecycleRules(campaign.recycle_rules, campaign.retry_delay_minutes),
+    dispositionRules: campaign.disposition_rules,
     claimTimeoutSec: CLAIM_TIMEOUT_SEC,
     maxAttempts: Number(campaign.retry_count) || 0,
     leadOrder: campaign.lead_order,

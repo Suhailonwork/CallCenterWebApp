@@ -1,13 +1,27 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { pool, query } from '@/lib/db';
+import { pool, query, queryOne } from '@/lib/db';
 import { broadcastChange, agentWrapupDone } from '@/lib/realtime';
 import { agentCanAccessCampaign } from '@/lib/groups';
 import { finalizeLead } from '@/lib/leadWriter';
-import { dispositionToStatus, LEAD_STATUS } from '@/lib/leadStatus';
+import { dispositionToStatus, statusToCallStatus, LEAD_STATUS } from '@/lib/leadStatus';
+import {
+  DISPOSITION_ACTION,
+  parseDispositionRules,
+  resolveDisposition,
+} from '@/lib/dispositionRules';
 import { createDialerLog, EVENT } from '@/lib/dialerLog';
 
 export const runtime = 'nodejs';
+
+const CALL_STATUSES = [
+  'connected',
+  'no_answer',
+  'busy',
+  'voicemail',
+  'failed',
+  'wrong_number',
+] as const;
 
 const logSchema = z.object({
   phoneNumber: z.string().min(1).max(32),
@@ -16,29 +30,55 @@ const logSchema = z.object({
   csvDataId: z.number().int().positive().nullable().optional(),
   /** calls.id of the attempt this wrap-up belongs to (sent by the dialer). */
   callId: z.number().int().positive().nullable().optional(),
-  status: z.enum([
-    'connected',
-    'no_answer',
-    'busy',
-    'voicemail',
-    'failed',
-    'wrong_number',
-  ]),
+  /**
+   * What the line did. The agent picks it in MANUAL mode only; predictive and
+   * ratio wrap-ups omit it (the customer was already connected when the screen
+   * popped) and it is derived from the disposition below.
+   */
+  status: z.enum(CALL_STATUSES).nullable().optional(),
   durationSeconds: z.number().int().min(0).max(86400),
   note: z.string().max(5000).nullable().optional(),
+  /** The disposition code (PAID, PTP, TNC…) — `tags` is its historical name. */
   tags: z.string().max(255).nullable().optional(),
+  /** The reason picked under that code; it is what the dialing rule keys on. */
+  dispositionReason: z.string().max(255).nullable().optional(),
   followUpAt: z.string().max(40).nullable().optional(),
   /** 'agent' keeps the callback for this agent, 'campaign' offers it to anyone. */
   callbackType: z.enum(['agent', 'campaign']).optional(),
 });
 
+type CallStatus = (typeof CALL_STATUSES)[number];
+
+/**
+ * What the line did, for a wrap-up that did not say — a predictive or ratio
+ * call, where the customer was already connected when the screen popped.
+ *
+ * The disposition is the evidence: a code that rests the lead on NO_ANSWER or
+ * BUSY means the agent never got a conversation, and everything else (a
+ * promise, a settlement, a wrong number the agent heard) means they did.
+ */
+function deriveCallStatus(rule: { status?: string | null } | null): CallStatus {
+  if (!rule?.status) return 'connected';
+  // A booked callback is a conversation, whatever the lead status now reads.
+  if (rule.status === LEAD_STATUS.CALLBACK) return 'connected';
+  const mapped = statusToCallStatus(rule.status);
+  return (CALL_STATUSES as readonly string[]).includes(mapped)
+    ? (mapped as CallStatus)
+    : 'connected';
+}
+
 /**
  * POST /api/employee/calls — save the wrap-up for a finished call.
  *
  * This is the end of the lead lifecycle: it closes the attempt's call-history
- * row, writes the resulting lead status, schedules the redial when the
- * campaign's recycle rules allow one, releases the claim, books any callback
- * and returns the agent to READY.
+ * row, writes the resulting lead status, schedules the redial the disposition
+ * rules (or, failing those, the campaign's recycle rules) call for, releases
+ * the claim, books any callback and returns the agent to READY.
+ *
+ * Every dialer mode lands here with the same contract. Manual sends the call
+ * status it observed; predictive and ratio send only the disposition and the
+ * status is derived — so the lead's future is decided by the same rule in
+ * every mode.
  */
 export async function POST(req: Request) {
   const user = await authenticate(['employee']);
@@ -69,6 +109,42 @@ export async function POST(req: Request) {
     if (!allowed) return fail("You are not assigned to this contact's campaign", 403);
     lead = { id: row.id, campaign_id: row.campaign_id, list_id: row.list_id };
   }
+
+  // ---- the disposition rule: what this wrap-up means for the lead ----
+  const campaignId = d.campaignId ?? lead?.campaign_id ?? null;
+  const campaignRules = campaignId
+    ? await queryOne<{ dialer_type: string; disposition_rules: unknown }>(
+        'SELECT dialer_type, disposition_rules FROM campaigns WHERE id = ?',
+        [campaignId],
+      )
+    : null;
+
+  const rule = resolveDisposition({
+    code: d.tags,
+    reason: d.dispositionReason,
+    overrides: parseDispositionRules(campaignRules?.disposition_rules),
+  });
+
+  // Predictive and ratio wrap-ups carry no call status — the customer was
+  // already on the line when the screen popped, so the disposition is the only
+  // thing the agent judged. Manual sends one and it is taken as observed.
+  const status = d.status ?? deriveCallStatus(rule);
+  if (!d.status && !rule) {
+    return fail('A call status or a disposition is required');
+  }
+
+  // A disposition that closes the lead cannot also book a callback — the
+  // engine would feed it straight back into the queue and undo the close.
+  const closes =
+    rule?.action === DISPOSITION_ACTION.CLOSE || rule?.action === DISPOSITION_ACTION.DNC;
+  const followUp = !closes && d.followUpAt ? d.followUpAt.replace('T', ' ') : null;
+  if (rule?.requires_followup && !followUp) {
+    return fail(`"${rule.code}" needs a follow-up date and time`);
+  }
+
+  // The status the attempt produces: the rule's, when it names one. The
+  // planner applies the same precedence, so the history row and the lead agree.
+  const attemptLeadStatus = rule?.status ?? dispositionToStatus(status);
 
   const log = createDialerLog(pool, { tag: 'WRAPUP' });
   const conn = await pool.getConnection();
@@ -107,9 +183,10 @@ export async function POST(req: Request) {
                 csv_data_id      = COALESCE(csv_data_id, ?),
                 list_id          = COALESCE(list_id, ?),
                 contact_name     = COALESCE(contact_name, ?),
-                status           = ?,
-                lead_status      = ?,
-                disposition      = ?,
+                status              = ?,
+                lead_status         = ?,
+                disposition         = ?,
+                disposition_reason  = ?,
                 duration_seconds = GREATEST(duration_seconds, ?),
                 answered_at      = CASE WHEN ? = 'connected'
                                         THEN COALESCE(answered_at, DATE_SUB(NOW(), INTERVAL ? SECOND))
@@ -122,11 +199,12 @@ export async function POST(req: Request) {
           d.csvDataId ?? null,
           lead?.list_id ?? null,
           d.contactName ?? null,
-          d.status,
-          dispositionToStatus(d.status),
-          d.tags ?? null,
+          status,
+          attemptLeadStatus,
+          rule?.code ?? d.tags ?? null,
+          rule?.reason ?? d.dispositionReason ?? null,
           duration,
-          d.status,
+          status,
           duration,
           callId,
         ],
@@ -135,11 +213,11 @@ export async function POST(req: Request) {
       const [callRes]: any = await conn.execute(
         `INSERT INTO calls
            (employee_id, campaign_id, csv_data_id, list_id, phone_number, contact_name,
-            direction, dial_source, status, lead_status, disposition, duration_seconds,
-            started_at, answered_at, ended_at)
-         VALUES (?,?,?,?,?,?, 'outbound', 'manual', ?, ?, ?, ?,
+            direction, dial_source, status, lead_status, disposition, disposition_reason,
+            duration_seconds, started_at, answered_at, ended_at)
+         VALUES (?,?,?,?,?,?, 'outbound', 'manual', ?, ?, ?, ?, ?,
            DATE_SUB(NOW(), INTERVAL ${duration} SECOND),
-           ${d.status === 'connected' ? `DATE_SUB(NOW(), INTERVAL ${duration} SECOND)` : 'NULL'},
+           ${status === 'connected' ? `DATE_SUB(NOW(), INTERVAL ${duration} SECOND)` : 'NULL'},
            NOW())`,
         [
           user.id,
@@ -148,9 +226,10 @@ export async function POST(req: Request) {
           lead?.list_id ?? null,
           d.phoneNumber,
           d.contactName ?? null,
-          d.status,
-          dispositionToStatus(d.status),
-          d.tags ?? null,
+          status,
+          attemptLeadStatus,
+          rule?.code ?? d.tags ?? null,
+          rule?.reason ?? d.dispositionReason ?? null,
           duration,
         ],
       );
@@ -177,8 +256,6 @@ export async function POST(req: Request) {
     } catch (e) {
       console.error('[calls] recording link failed:', e);
     }
-
-    const followUp = d.followUpAt ? d.followUpAt.replace('T', ' ') : null;
 
     const [noteRes]: any = await conn.execute(
       `INSERT INTO call_notes (call_id, employee_id, note, tags, follow_up_at)
@@ -208,7 +285,7 @@ export async function POST(req: Request) {
     }
 
     // ---- 3. the daily performance rollup -----------------------------
-    const connected = d.status === 'connected' ? 1 : 0;
+    const connected = status === 'connected' ? 1 : 0;
     await conn.execute(
       `INSERT INTO performance
          (employee_id, date, calls_made, calls_connected, total_duration_seconds)
@@ -235,10 +312,22 @@ export async function POST(req: Request) {
     if (d.csvDataId) {
       plan = await finalizeLead(pool, {
         leadId: d.csvDataId,
-        status: dispositionToStatus(d.status),
-        disposition: d.tags ?? undefined,
+        status: dispositionToStatus(status),
+        disposition: rule?.code ?? d.tags ?? undefined,
+        // What the agent said outranks what the line did: the rule decides the
+        // status the lead rests on, whether it is redialled, when, and how often.
+        dispositionRule: rule ?? undefined,
+        followUpAt: followUp ?? undefined,
         release: true,
       });
+
+      // The rule may land the lead somewhere else than the attempt row was
+      // written with (the attempt cap closing it, say) — keep history honest.
+      if (plan && plan.status !== attemptLeadStatus && callId) {
+        await pool
+          .execute('UPDATE calls SET lead_status = ? WHERE id = ?', [plan.status, callId])
+          .catch((e) => console.error('[calls] lead_status sync failed:', e));
+      }
 
       log.log(EVENT.DISPOSITION, {
         leadId: d.csvDataId,
@@ -249,7 +338,9 @@ export async function POST(req: Request) {
         from: plan?.previousStatus,
         to: plan?.status,
         detail: {
-          disposition: d.tags || '-',
+          disposition: rule?.code || d.tags || '-',
+          reason: rule?.reason || undefined,
+          action: rule?.action || undefined,
           durationSec: duration,
           followUp: followUp || undefined,
         },
@@ -286,6 +377,9 @@ export async function POST(req: Request) {
     return ok(
       {
         callId,
+        callStatus: status,
+        disposition: rule?.code ?? null,
+        dispositionAction: rule?.action ?? null,
         leadStatus: plan?.status ?? null,
         nextRetryAt: plan?.nextRetryAt ?? null,
         willRetry: plan?.willRetry ?? false,

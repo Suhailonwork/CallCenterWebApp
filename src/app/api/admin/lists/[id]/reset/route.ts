@@ -81,6 +81,10 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
  * call_count, recycle_attempts, next_retry_at — and any stale claim is
  * dropped. Statuses and last_call_at are left alone.
  *
+ * last_disposition is cleared too: a disposition that closes a lead (PAID,
+ * Wrong Number, Legal Notice) keeps the claim query from ever offering it
+ * again, so leaving it would make the reset a lie for exactly those leads.
+ *
  * call_count is zeroed on purpose: it is what the campaign's "max attempts per
  * lead" cap is measured against, so leaving it would let a lead pass the reset
  * and still be refused by the cap — a reset that silently does nothing. The
@@ -105,6 +109,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
             next_retry_at    = NULL,
             completed_at     = NULL,
             pre_dial_status  = NULL,
+            last_disposition = NULL,
             assigned_to      = NULL,
             claimed_at       = NULL
       WHERE list_id = ? AND ${NOT_LIVE}`,

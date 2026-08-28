@@ -25,7 +25,7 @@ export async function GET() {
   const campaigns = await query<CampaignRow>(
     `SELECT c.id, c.name, c.description, c.status, c.dialer_type,
             c.group_id, g.name AS group_name,
-            c.dial_statuses, c.recycle_rules,
+            c.dial_statuses, c.recycle_rules, c.disposition_rules,
             c.dial_ratio, c.retry_count, c.retry_delay_minutes, c.dial_timeout_sec,
             c.wrapup_seconds, c.lead_order, c.callbacks_enabled, c.max_abandon_pct,
             c.recording_enabled,

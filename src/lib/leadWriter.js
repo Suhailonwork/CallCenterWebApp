@@ -159,6 +159,9 @@ async function touchClaim(db, leadId) {
  * @param {number} o.leadId
  * @param {string} o.status                 status the attempt produced
  * @param {string} [o.disposition]          agent disposition code (PTP, PAID…)
+ * @param {object} [o.dispositionRule]      from resolveDisposition(); decides the
+ *                                          lead's future when the agent saved one
+ * @param {Date|string} [o.followUpAt]      callback time the agent booked
  * @param {object} [o.campaign]             {recycle_rules, retry_count, retry_delay_minutes}
  * @param {boolean} [o.release=true]        hand the claim back
  * @param {number} [o.gatewayId]
@@ -168,7 +171,10 @@ async function touchClaim(db, leadId) {
  *                    campaignId:number|null, listId:number|null,
  *                    callCount:number, recycleAttempts:number}|null>}
  */
-async function finalizeLead(db, { leadId, status, disposition, campaign, release, gatewayId }) {
+async function finalizeLead(
+  db,
+  { leadId, status, disposition, dispositionRule, followUpAt, campaign, release, gatewayId },
+) {
   const lead = await selectOne(
     db,
     `SELECT id, campaign_id, list_id, call_status, pre_dial_status, call_count,
@@ -187,7 +193,13 @@ async function finalizeLead(db, { leadId, status, disposition, campaign, release
     );
   }
 
-  const newStatus = normalizeStatus(status);
+  // The disposition rule may land the lead on a different status than the line
+  // produced (a BPTP call was CONNECTED but rests on CONNECTED with its own
+  // retry timer; a "Number busy" TNC rests on BUSY). planNextAttempt applies
+  // that; the recycle-budget comparison below has to use the same status.
+  const newStatus = normalizeStatus(
+    dispositionRule && dispositionRule.status ? dispositionRule.status : status,
+  );
   // recycle_attempts is reset whenever the status CHANGES (VICIdial behaviour),
   // so the retry budget must be judged against the same comparison. The status
   // to compare against is the one the lead held BEFORE this attempt, captured
@@ -212,6 +224,8 @@ async function finalizeLead(db, { leadId, status, disposition, campaign, release
     recycleAttempts: effectiveAttempts,
     callCount: Number(lead.call_count) || 0,
     maxAttempts: camp ? Number(camp.retry_count) || 0 : 0,
+    dispositionRule: dispositionRule || null,
+    followUpAt: followUpAt || null,
   });
 
   const finalStatus = plan.status;

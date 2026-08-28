@@ -1,14 +1,17 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { pool, query } from '@/lib/db';
+import { pool, query, queryOne } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import { tlOwnsCampaign } from '@/lib/groups';
 import {
   dialStatusesSchema,
   recycleRulesSchema,
+  dispositionRulesSchema,
   pacingSchema,
   applyCampaignPacing,
+  rejectedPacingFields,
 } from '@/lib/lists';
+import { labelFor } from '@/lib/dialerModes';
 import { kickDialer } from '@/lib/realtime';
 
 export const runtime = 'nodejs';
@@ -19,6 +22,7 @@ const schema = pacingSchema.extend({
   gatewayIds:  z.array(z.number().int().positive()).optional(),
   dial_statuses: dialStatusesSchema.optional(),
   recycle_rules: recycleRulesSchema.optional(),
+  disposition_rules: dispositionRulesSchema.nullable().optional(),
 });
 
 /** PATCH /api/tl/campaigns/:id - edit a campaign inside the TL's groups. */
@@ -47,14 +51,32 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     return fail('Select at least one dial status or add a recycle rule — otherwise nothing will dial');
   }
 
+  // Pacing belongs to the mode the campaign will have when this request is
+  // done, so a PATCH that changes both is judged against the NEW mode.
+  const current = await queryOne<{ dialer_type: string }>(
+    'SELECT dialer_type FROM campaigns WHERE id = ?',
+    [id],
+  );
+  if (!current) return fail('Campaign not found', 404);
+  const mode = d.dialer_type ?? current.dialer_type;
+
+  const refused = rejectedPacingFields(mode, d);
+  if (refused.length > 0) {
+    return fail(
+      `A ${labelFor(mode)} campaign has no ${refused.join(', ')} — ` +
+        `those settings only exist for modes the server paces.`,
+    );
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    const pacingChanged = (await applyCampaignPacing(conn, id, d)) > 0;
+    const pacingChanged = (await applyCampaignPacing(conn, id, d, mode)) > 0;
     const dialRulesChanged =
       d.dial_statuses !== undefined ||
       d.recycle_rules !== undefined ||
+      d.disposition_rules !== undefined ||
       d.status !== undefined ||
       d.dialer_type !== undefined ||
       d.gatewayIds !== undefined ||
@@ -75,6 +97,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (d.recycle_rules !== undefined) {
       await conn.execute('UPDATE campaigns SET recycle_rules = ? WHERE id = ?', [
         JSON.stringify(d.recycle_rules),
+        id,
+      ]);
+    }
+    if (d.disposition_rules !== undefined) {
+      // NULL puts the campaign back on the catalogue defaults; anything else
+      // is an override merged onto them at resolve time.
+      await conn.execute('UPDATE campaigns SET disposition_rules = ? WHERE id = ?', [
+        d.disposition_rules === null ? null : JSON.stringify(d.disposition_rules),
         id,
       ]);
     }

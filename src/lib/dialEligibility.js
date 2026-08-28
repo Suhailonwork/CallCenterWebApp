@@ -16,23 +16,34 @@
  *                      (which lands it on a real terminal status first).
  *   3. RETRY GATE    — next_retry_at is NULL or already due.
  *   4. ATTEMPT CAP   — campaigns.retry_count (0 = unlimited) not reached.
- *   5. ONE OF:
+ *   5. DISPOSITION   — the agent's last disposition did not close the lead.
+ *                      A code whose rule closes it (PAID, WN, Legal Notice…)
+ *                      is refused here whatever status it rests on and
+ *                      whatever the campaign dials.
+ *   6. ONE OF:
  *      a) FRESH   : called = 0 AND call_status IN campaign.dial_statuses
  *      b) RECYCLE : call_status matches a recycle rule, the rule's delay has
  *                   passed since last_call_at, and recycle_attempts is below
  *                   the rule's max_attempts. (Ignores `called` — this is
  *                   VICIdial recycle behaviour.)
+ *      c) DISPOSITION : last_disposition matches a disposition rule that
+ *                   redials on its own timer (dispositionRules.js). This is
+ *                   what lets a rule bring a lead back on a status the
+ *                   campaign has no recycle rule for — a broken promise
+ *                   resting on CONNECTED, say — and it is the same rule
+ *                   planNextAttempt used when it scheduled the retry.
  *
  *  The SELECT returns `via_recycle` (0/1) so callers increment
- *  recycle_attempts only for branch-b claims, and uses FOR UPDATE SKIP LOCKED
- *  so concurrent dialer workers step over each other's rows instead of
- *  serialising on the same one.
+ *  recycle_attempts only for claims that did not come through branch a, and
+ *  uses FOR UPDATE SKIP LOCKED so concurrent dialer workers step over each
+ *  other's rows instead of serialising on the same one.
  * ===================================================================== */
 "use strict";
 
 const {
   LEAD_STATUS,
   IN_FLIGHT_STATUSES,
+  TERMINAL_STATUSES,
   DEFAULT_DIAL_STATUSES,
   DEFAULT_RECYCLE_RULES,
   normalizeStatus,
@@ -40,6 +51,13 @@ const {
   parseDialStatuses,
   parseRecycleRules,
 } = require("./leadStatus.js");
+
+const {
+  DISPOSITION_ACTION,
+  parseDispositionRules,
+  blockedDispositionCodes,
+  dispositionRetryTerms,
+} = require("./dispositionRules.js");
 
 /** Column list every claim returns — the dialer and the screen pop both use it. */
 const LEAD_COLUMNS = `id, campaign_id, list_id, phone_number, name, email, company,
@@ -75,6 +93,9 @@ function orderByFor(leadOrder) {
  * @param {string}   [opts.leadOrder]      campaigns.lead_order
  * @param {number}   [opts.limit]          how many leads to lock (predictive over-dial)
  * @param {number[]} [opts.excludeIds]     lead ids already in flight in this process
+ * @param {unknown}  [opts.dispositionRules] campaigns.disposition_rules (raw column or
+ *                   an already-parsed override map). The catalogue defaults in
+ *                   dispositionRules.js apply either way.
  * @returns {{sql: string, params: any[]} | null} null when NOTHING could ever
  *          match (no lists, or no dial statuses and no recycle rules) — the
  *          caller should skip the round-trip and log the reason.
@@ -89,11 +110,19 @@ function buildClaimSelect({
   leadOrder,
   limit,
   excludeIds,
+  dispositionRules,
 }) {
   if (!Array.isArray(listIds) || listIds.length === 0) return null;
   const statuses = Array.isArray(dialStatuses) ? dialStatuses.map(normalizeStatus) : [];
   const rules = Array.isArray(recycleRules) ? recycleRules : [];
   if (statuses.length === 0 && rules.length === 0) return null;
+
+  // Disposition rules always apply: the catalogue's defaults are the baseline
+  // and campaigns.disposition_rules only overrides parts of it, so a lead the
+  // agent closed is refused even by a campaign that never configured anything.
+  const dispoOverrides = parseDispositionRules(dispositionRules);
+  const blockedCodes = blockedDispositionCodes(dispoOverrides);
+  const dispoTerms = dispositionRetryTerms(dispoOverrides);
 
   const cap = Number(maxAttempts) || 0;
   const rowLimit = Math.max(1, Math.min(Number(limit) || 1, 100));
@@ -125,6 +154,17 @@ function buildClaimSelect({
   // Attempt cap.
   params.push(cap, cap);
 
+  // Disposition gate: a lead the agent closed (PAID, Wrong Number, Legal
+  // Notice…) never comes back, whatever status it rests on. This is the
+  // eligibility half of the disposition rules — planNextAttempt already
+  // refused to schedule a retry for it, and this refuses the claim as well.
+  let blockedSql = "";
+  if (blockedCodes.length > 0) {
+    blockedSql = `\n   AND (last_disposition IS NULL
+             OR last_disposition NOT IN (${blockedCodes.map(() => "?").join(",")}))`;
+    params.push(...blockedCodes);
+  }
+
   // Exclusions come BEFORE the branch clause in the SQL below, so their params
   // must be pushed before the branch's. Params bind positionally: pushing these
   // later silently shifts every placeholder after the attempt cap.
@@ -150,7 +190,28 @@ function buildClaimSelect({
     );
     params.push(r.status, r.max_attempts, r.delay_min);
   }
-  const branchSql = [freshSql, ...recycleTerms].join("\n            OR ");
+
+  // Branch c) DISPOSITION — one OR-term per rule that redials on its own timer.
+  // A retry term repeats the delay the rule scheduled with; a callback term
+  // does not, because the appointment time is already in next_retry_at (gated
+  // above) and an appointment the agent promised always comes back.
+  const terminalSql = TERMINAL_STATUSES.map(() => "?").join(",");
+  const dispoSqlTerms = [];
+  for (const t of dispoTerms) {
+    if (t.action === DISPOSITION_ACTION.CALLBACK) {
+      dispoSqlTerms.push(`(last_disposition = ? AND call_status = ?)`);
+      params.push(t.code, LEAD_STATUS.CALLBACK);
+    } else {
+      dispoSqlTerms.push(
+        `(last_disposition = ? AND recycle_attempts < ? AND last_call_at IS NOT NULL
+             AND last_call_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+             AND call_status NOT IN (${terminalSql}))`,
+      );
+      params.push(t.code, t.max_attempts, t.delay_min, ...TERMINAL_STATUSES);
+    }
+  }
+
+  const branchSql = [freshSql, ...recycleTerms, ...dispoSqlTerms].join("\n            OR ");
 
   const sql = `SELECT ${LEAD_COLUMNS},
        ${viaRecycleSql} AS via_recycle
@@ -161,7 +222,7 @@ function buildClaimSelect({
          OR ( claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND)
               AND call_status NOT IN (${inFlightSql}) ) )
    AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-   AND (? = 0 OR call_count < ?)${excludeSql}
+   AND (? = 0 OR call_count < ?)${blockedSql}${excludeSql}
    AND ( ${branchSql} )
  ORDER BY ${orderByFor(leadOrder)}
  LIMIT ${rowLimit}

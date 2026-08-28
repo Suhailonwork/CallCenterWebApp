@@ -8,6 +8,11 @@ import {
   customFieldColumns,
   normFieldName,
 } from '@/lib/listFields';
+import {
+  ALL_PACING_FIELDS,
+  disallowedPacingFields,
+  modeOwnsPacingField,
+} from '@/lib/dialerModes';
 
 /** Up to 200 field names, trimmed & non-empty, ≤120 chars each (defaults + custom). */
 export const fieldsSchema = z.array(z.string().trim().min(1).max(120)).max(200);
@@ -292,6 +297,29 @@ export const recycleRulesSchema = z
   )
   .max(20);
 
+/**
+ * Per-campaign overrides of the disposition dialing rules, keyed by code.
+ * Every field is optional: what a campaign leaves out keeps the catalogue
+ * default from src/lib/dispositionRules.js, which is also what an unlisted
+ * code gets. The parser there re-validates whatever lands in the column, so
+ * this schema only has to keep the shape sane on the way in.
+ */
+const dispositionRuleFields = {
+  status: z.string().trim().min(1).max(32).optional(),
+  action: z.enum(['retry', 'callback', 'skip', 'close', 'dnc']).optional(),
+  delay_min: z.number().int().min(0).max(525600).nullable().optional(), // up to a year
+  max_attempts: z.number().int().min(1).max(50).nullable().optional(),
+  requires_followup: z.boolean().optional(),
+};
+
+export const dispositionRulesSchema = z.record(
+  z.string().trim().min(1).max(32),
+  z.object({
+    ...dispositionRuleFields,
+    reasons: z.record(z.string().trim().min(1).max(120), z.object(dispositionRuleFields)).optional(),
+  }),
+);
+
 /** HH:MM or HH:MM:SS — the calling-window bounds. */
 const timeSchema = z
   .string()
@@ -338,14 +366,48 @@ export const pacingSchema = z.object({
 export type PacingInput = z.infer<typeof pacingSchema>;
 
 /**
+ * Pacing fields in `d` that the given mode does not own.
+ *
+ * Pacing is a property of the dialing MODE, not of the campaign row: a manual
+ * campaign has no line count to configure and a ratio campaign has no abandon
+ * budget to tune, because neither one runs the adaptive algorithm those
+ * settings belong to. The single definition lives in dialerModes.js and this
+ * is the API's use of it, so a request cannot write a setting the UI would
+ * never have shown.
+ *
+ * @returns the offending column names, empty when the request is legal
+ */
+export function rejectedPacingFields(mode: unknown, d: PacingInput): string[] {
+  return disallowedPacingFields(mode, d as Record<string, unknown>);
+}
+
+/**
  * Write whichever pacing fields the request actually sent, in one UPDATE.
  * Returns the number of columns changed (0 = nothing to do).
+ *
+ * `mode` is the dialer mode the campaign will have AFTER this request. Pass it
+ * and any pacing column the mode does not own is dropped; the caller should
+ * normally have rejected the request outright with rejectedPacingFields()
+ * first, so this is the backstop rather than the check.
  */
 export async function applyCampaignPacing(
   conn: PoolConnection,
   campaignId: number,
-  d: PacingInput,
+  input: PacingInput,
+  mode?: unknown,
 ): Promise<number> {
+  const d: PacingInput =
+    mode === undefined
+      ? input
+      : (Object.fromEntries(
+          Object.entries(input).filter(
+            ([k, v]) =>
+              v === undefined ||
+              !ALL_PACING_FIELDS.includes(k) ||
+              modeOwnsPacingField(mode, k),
+          ),
+        ) as PacingInput);
+
   const sets: string[] = [];
   const vals: (string | number | null)[] = [];
   const push = (col: string, val: string | number | null) => {

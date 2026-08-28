@@ -23,6 +23,10 @@ export interface Campaign {
   status: string;
   dialer_type: DialerType;
   gateways: CampaignGateway[];
+  /** Per-campaign overrides for the disposition dialing rules (JSON column).
+   *  The dialer's wrap-up form resolves them through the same module the
+   *  server does, so the agent is shown the rule that will actually run. */
+  disposition_rules?: unknown;
 }
 
 export interface Contact {
@@ -160,6 +164,9 @@ export interface CampaignRow {
   dial_statuses?: string[] | string | null;
   /** Auto-retry rules (JSON column; array once parsed). */
   recycle_rules?: RecycleRule[] | string | null;
+  /** Overrides for the disposition dialing rules, keyed by code
+   *  (JSON column; see src/lib/dispositionRules.js for the defaults). */
+  disposition_rules?: Record<string, DispositionRuleOverride> | string | null;
   // ---- pacing (see db/migrate-vicidial.mjs) ----
   /** Lines opened per READY agent; 1.00 = progressive. */
   dial_ratio?: number | string | null;
@@ -211,6 +218,20 @@ export interface RecycleRule {
   status: string;
   delay_min: number;
   max_attempts: number;
+}
+
+export type DispositionAction = 'retry' | 'callback' | 'skip' | 'close' | 'dnc';
+
+/** A campaign's override of one disposition's dialing rule. Every field is
+ *  optional — what is left out keeps the catalogue's default. */
+export interface DispositionRuleOverride {
+  status?: string;
+  action?: DispositionAction;
+  delay_min?: number | null;
+  max_attempts?: number | null;
+  requires_followup?: boolean;
+  /** Per-reason overrides, keyed by the reason text. */
+  reasons?: Record<string, Omit<DispositionRuleOverride, 'reasons'>>;
 }
 
 export interface CallReportRow {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { dialStatusesSchema, recycleRulesSchema } from '@/lib/lists';
+import { dialStatusesSchema, recycleRulesSchema, dispositionRulesSchema } from '@/lib/lists';
 import { dialableReport } from '@/lib/dialerDiag';
 
 export const runtime = 'nodejs';
@@ -10,6 +10,7 @@ export const dynamic = 'force-dynamic';
 const previewSchema = z.object({
   dial_statuses: dialStatusesSchema.optional(),
   recycle_rules: recycleRulesSchema.optional(),
+  disposition_rules: dispositionRulesSchema.nullable().optional(),
   retry_count: z.number().int().min(0).max(100).optional(),
 });
 
@@ -48,6 +49,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   const report = await dialableReport(id, {
     dialStatuses: parsed.data.dial_statuses,
     recycleRules: parsed.data.recycle_rules,
+    // null is a real value here: "back to the catalogue defaults".
+    dispositionRules:
+      parsed.data.disposition_rules === undefined ? undefined : parsed.data.disposition_rules,
     maxAttempts: parsed.data.retry_count,
   });
   if (!report) return fail('Campaign not found', 404);
