@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
 import { Button } from '@/components/Button';
+import { useEscapeKey } from '@/lib/useEscapeKey';
 import type { Shift } from '@/types';
 
 const EMPTY = {
@@ -42,6 +43,12 @@ export function ShiftManager({ onClose }: { onClose?: () => void }) {
   useEffect(() => {
     load();
   }, []);
+
+  // Esc closes the shift form first, then the manager itself.
+  useEscapeKey(modal !== null || !!onClose, () => {
+    if (modal) setModal(null);
+    else onClose?.();
+  });
 
   function openCreate() {
     setForm({ ...EMPTY });

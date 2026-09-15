@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
+import { useEscapeKey } from '@/lib/useEscapeKey';
 
 interface Emp {
   id: number;
@@ -38,6 +39,8 @@ export function CampaignAssign({
       }
     })();
   }, [campaignId]);
+
+  useEscapeKey(true, onClose);
 
   function toggle(id: number) {
     setSelected((s) => {

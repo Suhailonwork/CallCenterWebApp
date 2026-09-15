@@ -14,6 +14,7 @@ import type {
 import type { GsmGateway } from "./GatewayManager";
 import { FieldsEditor } from "./FieldsEditor";
 import { DEFAULT_LIST_FIELDS } from "@/lib/listFields";
+import { useEscapeKey } from "@/lib/useEscapeKey";
 import {
   DISPOSITION_CATALOG,
   describeRule,
@@ -226,6 +227,16 @@ export function CampaignManager({
   useEffect(() => {
     load();
   }, []);
+
+  // Esc closes the top-most modal — not while busy, same as its Cancel button.
+  useEscapeKey(!!(showForm || uploadFor || rulesFor || editGwFor), () => {
+    if (editGwFor) setEditGwFor(null);
+    else if (rulesFor) {
+      if (!rulesBusy) setRulesFor(null);
+    } else if (uploadFor) {
+      if (!uploadBusy) setUploadFor(null);
+    } else setShowForm(false);
+  });
 
   function toggleGateway(
     id: number,
@@ -708,208 +719,219 @@ export function CampaignManager({
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Campaigns</h1>
         <button
-          onClick={() => setShowForm((s) => !s)}
+          onClick={() => setShowForm(true)}
           className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
         >
-          {showForm ? "Cancel" : "+ New campaign"}
+          + New campaign
         </button>
       </div>
 
-      {/* ── Create campaign form ── */}
+      {/* ── Create campaign modal ── */}
       {showForm && (
-        <div className="rounded-2xl bg-white p-5 shadow-sm space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Name
-            </label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Description
-            </label>
-            <input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Call script
-            </label>
-            <textarea
-              value={script}
-              onChange={(e) => setScript(e.target.value)}
-              rows={3}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-
-          {/* ── Group ownership ── */}
-          {(groupOptions.length > 0 || requireGroup) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-base font-semibold">New campaign</h2>
             <div>
               <label className="block text-sm font-medium text-slate-700">
-                Group
-                {!requireGroup && (
-                  <span className="ml-1 text-xs text-slate-400">(optional)</span>
-                )}
+                Name
               </label>
-              <select
-                value={groupId}
-                onChange={(e) =>
-                  setGroupId(e.target.value === "" ? "" : Number(e.target.value))
-                }
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              >
-                <option value="">
-                  {requireGroup ? "Select a group…" : "No group (admin only)"}
-                </option>
-                {groupOptions.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Description
+              </label>
+              <input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Call script
+              </label>
+              <textarea
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                rows={3}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            {/* ── Group ownership ── */}
+            {(groupOptions.length > 0 || requireGroup) && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700">
+                  Group
+                  {!requireGroup && (
+                    <span className="ml-1 text-xs text-slate-400">(optional)</span>
+                  )}
+                </label>
+                <select
+                  value={groupId}
+                  onChange={(e) =>
+                    setGroupId(e.target.value === "" ? "" : Number(e.target.value))
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  <option value="">
+                    {requireGroup ? "Select a group…" : "No group (admin only)"}
                   </option>
+                  {groupOptions.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
+                </select>
+                {requireGroup && groupOptions.length === 0 && (
+                  <p className="mt-1 text-xs text-amber-600">
+                    You are not assigned to any group yet — ask an admin.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Data template is chosen per LIST (on upload / in Lists), not on
+                the campaign — VICIdial-style: campaign = rules, list = data. */}
+
+            {/* ── Dialer type ── */}
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Dialer type
+              </label>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {DIALER_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setDialerType(opt.value)}
+                    className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                      dialerType === opt.value
+                        ? "border-indigo-400 bg-indigo-50 ring-1 ring-indigo-400"
+                        : "border-slate-200 hover:bg-slate-50"
+                    }`}
+                  >
+                    <p className="font-semibold">{opt.label}</p>
+                    <p className="mt-0.5 text-xs text-slate-500 leading-tight">
+                      {opt.desc}
+                    </p>
+                  </button>
                 ))}
-              </select>
-              {requireGroup && groupOptions.length === 0 && (
-                <p className="mt-1 text-xs text-amber-600">
-                  You are not assigned to any group yet — ask an admin.
+              </div>
+            </div>
+
+            {/* ── Gateway multi-select ── */}
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                GSM Gateways
+                <span className="ml-1 text-xs text-slate-400">
+                  (select one or more)
+                </span>
+              </label>
+              {allGateways.length === 0 ? (
+                <p className="mt-1 text-xs text-slate-400">
+                  No gateways configured — add one in the Gateways tab first.
+                </p>
+              ) : (
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {allGateways.map((gw) => {
+                    const checked = selectedGatewayIds.includes(gw.id);
+                    return (
+                      <label
+                        key={gw.id}
+                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                          checked
+                            ? "border-indigo-400 bg-indigo-50 text-indigo-800"
+                            : "border-slate-200 hover:bg-slate-50"
+                        } ${gw.status === "inactive" ? "opacity-50" : ""}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={gw.status === "inactive"}
+                          onChange={() =>
+                            toggleGateway(
+                              gw.id,
+                              selectedGatewayIds,
+                              setSelectedGatewayIds,
+                            )
+                          }
+                          className="accent-indigo-600"
+                        />
+                        <span className="flex-1 truncate font-medium">
+                          {gw.name}
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          {gw.channels}ch
+                        </span>
+                        {gwStatus[gw.id] ? (
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 text-xs font-medium ${
+                              gwStatus[gw.id].reachable
+                                ? "bg-green-100 text-green-700"
+                                : "bg-red-100 text-red-600"
+                            }`}
+                          >
+                            {gwStatus[gw.id].reachable ? "● Online" : "● Offline"}
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-xs text-slate-400">
+                            ● Unknown
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedGatewayIds.length > 0 && (
+                <p className="mt-1 text-xs text-indigo-600 font-medium">
+                  {selectedGatewayIds.length} gateway(s) selected — total{" "}
+                  {allGateways
+                    .filter((g) => selectedGatewayIds.includes(g.id))
+                    .reduce((s, g) => s + g.channels, 0)}{" "}
+                  channels
                 </p>
               )}
             </div>
-          )}
 
-          {/* Data template is chosen per LIST (on upload / in Lists), not on
-              the campaign — VICIdial-style: campaign = rules, list = data. */}
-
-          {/* ── Dialer type ── */}
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Dialer type
-            </label>
-            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {DIALER_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setDialerType(opt.value)}
-                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
-                    dialerType === opt.value
-                      ? "border-indigo-400 bg-indigo-50 ring-1 ring-indigo-400"
-                      : "border-slate-200 hover:bg-slate-50"
-                  }`}
-                >
-                  <p className="font-semibold">{opt.label}</p>
-                  <p className="mt-0.5 text-xs text-slate-500 leading-tight">
-                    {opt.desc}
-                  </p>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* ── Gateway multi-select ── */}
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              GSM Gateways
-              <span className="ml-1 text-xs text-slate-400">
-                (select one or more)
+            {/* ── Recording toggle ── */}
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50">
+              <input
+                type="checkbox"
+                checked={recordingEnabled}
+                onChange={(e) => setRecordingEnabled(e.target.checked)}
+                className="accent-indigo-600"
+              />
+              <span className="font-medium text-slate-700">
+                Enable call recording
+              </span>
+              <span className="text-xs text-slate-400">
+                — records every call in this campaign
               </span>
             </label>
-            {allGateways.length === 0 ? (
-              <p className="mt-1 text-xs text-slate-400">
-                No gateways configured — add one in the Gateways tab first.
-              </p>
-            ) : (
-              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {allGateways.map((gw) => {
-                  const checked = selectedGatewayIds.includes(gw.id);
-                  return (
-                    <label
-                      key={gw.id}
-                      className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
-                        checked
-                          ? "border-indigo-400 bg-indigo-50 text-indigo-800"
-                          : "border-slate-200 hover:bg-slate-50"
-                      } ${gw.status === "inactive" ? "opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={gw.status === "inactive"}
-                        onChange={() =>
-                          toggleGateway(
-                            gw.id,
-                            selectedGatewayIds,
-                            setSelectedGatewayIds,
-                          )
-                        }
-                        className="accent-indigo-600"
-                      />
-                      <span className="flex-1 truncate font-medium">
-                        {gw.name}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {gw.channels}ch
-                      </span>
-                      {gwStatus[gw.id] ? (
-                        <span
-                          className={`rounded-full px-1.5 py-0.5 text-xs font-medium ${
-                            gwStatus[gw.id].reachable
-                              ? "bg-green-100 text-green-700"
-                              : "bg-red-100 text-red-600"
-                          }`}
-                        >
-                          {gwStatus[gw.id].reachable ? "● Online" : "● Offline"}
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-xs text-slate-400">
-                          ● Unknown
-                        </span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-            {selectedGatewayIds.length > 0 && (
-              <p className="mt-1 text-xs text-indigo-600 font-medium">
-                {selectedGatewayIds.length} gateway(s) selected — total{" "}
-                {allGateways
-                  .filter((g) => selectedGatewayIds.includes(g.id))
-                  .reduce((s, g) => s + g.channels, 0)}{" "}
-                channels
-              </p>
-            )}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={create}
+                disabled={saving}
+                className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? "Creating…" : "Create campaign"}
+              </button>
+              <button
+                onClick={() => setShowForm(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
-
-          {/* ── Recording toggle ── */}
-          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50">
-            <input
-              type="checkbox"
-              checked={recordingEnabled}
-              onChange={(e) => setRecordingEnabled(e.target.checked)}
-              className="accent-indigo-600"
-            />
-            <span className="font-medium text-slate-700">
-              Enable call recording
-            </span>
-            <span className="text-xs text-slate-400">
-              — records every call in this campaign
-            </span>
-          </label>
-
-          <button
-            onClick={create}
-            disabled={saving}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {saving ? "Creating…" : "Create campaign"}
-          </button>
         </div>
       )}
 

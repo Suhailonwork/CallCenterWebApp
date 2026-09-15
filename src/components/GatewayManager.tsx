@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'react-toastify';
 import { Button } from '@/components/Button';
+import { useEscapeKey } from '@/lib/useEscapeKey';
 
 export interface GsmGateway {
   id:         number;
@@ -71,6 +72,8 @@ export function GatewayManager() {
       refreshTimers.current = [];
     };
   }, []);
+
+  useEscapeKey(showForm, () => setShowForm(false));
 
   function openCreate() {
     setEditGw(null);

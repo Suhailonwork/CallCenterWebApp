@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { toast } from "react-toastify";
+import { useEscapeKey } from "@/lib/useEscapeKey";
 import type { GroupRow, GroupMember } from "@/types";
 
 /**
@@ -48,6 +49,11 @@ export function GroupManager() {
   useEffect(() => {
     load();
   }, []);
+
+  useEscapeKey(showForm || editFor !== null, () => {
+    if (editFor) setEditFor(null);
+    else setShowForm(false);
+  });
 
   function toggle(id: number, list: number[], setList: (v: number[]) => void) {
     setList(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
@@ -190,45 +196,56 @@ export function GroupManager() {
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Groups</h1>
         <button
-          onClick={() => setShowForm((s) => !s)}
+          onClick={() => setShowForm(true)}
           className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
         >
-          {showForm ? "Cancel" : "+ New group"}
+          + New group
         </button>
       </div>
 
-      {/* ── Create group form ── */}
+      {/* ── Create group modal ── */}
       {showForm && (
-        <div className="rounded-2xl bg-white p-5 shadow-sm space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Name
-            </label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-base font-semibold">New group</h2>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Name
+              </label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Description
+              </label>
+              <input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            {memberPicker("Team Leads", allTls, tlIds, setTlIds)}
+            {memberPicker("Agents", allAgents, agentIds, setAgentIds)}
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={create}
+                disabled={saving}
+                className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? "Creating…" : "Create group"}
+              </button>
+              <button
+                onClick={() => setShowForm(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Description
-            </label>
-            <input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-          {memberPicker("Team Leads", allTls, tlIds, setTlIds)}
-          {memberPicker("Agents", allAgents, agentIds, setAgentIds)}
-          <button
-            onClick={create}
-            disabled={saving}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {saving ? "Creating…" : "Create group"}
-          </button>
         </div>
       )}
 

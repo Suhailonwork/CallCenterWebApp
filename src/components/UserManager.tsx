@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
+import { useEscapeKey } from '@/lib/useEscapeKey';
 import type { AdminUser, TeamSummary, Role, Shift } from '@/types';
 
 const ROLES: Role[] = ['manager', 'tl', 'employee', 'admin'];
@@ -54,6 +55,8 @@ export function UserManager() {
   useEffect(() => {
     load();
   }, []);
+
+  useEscapeKey(modal !== null, () => setModal(null));
 
   function openCreate() {
     setName('');

@@ -4,6 +4,7 @@ import { toast } from "react-toastify";
 import type { CampaignRow, ListRow } from "@/types";
 import { FieldsEditor } from "./FieldsEditor";
 import { DEFAULT_LIST_FIELDS } from "@/lib/listFields";
+import { useEscapeKey } from "@/lib/useEscapeKey";
 
 /**
  * Admin Lists console — VICIdial-style: a campaign is only rules; leads live
@@ -67,6 +68,15 @@ export function ListsManager() {
   useEffect(() => {
     load();
   }, []);
+
+  // Esc closes the top-most dialog — not while busy, same as its Cancel button.
+  useEscapeKey(showForm || editFor !== null || resetFor !== null, () => {
+    if (resetFor) {
+      if (!busy) setResetFor(null);
+    } else if (editFor) {
+      if (!busy) setEditFor(null);
+    } else setShowForm(false);
+  });
 
   const visible = useMemo(
     () =>
@@ -218,10 +228,10 @@ export function ListsManager() {
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Lists</h1>
         <button
-          onClick={() => setShowForm((s) => !s)}
+          onClick={() => setShowForm(true)}
           className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
         >
-          {showForm ? "Cancel" : "+ New list"}
+          + New list
         </button>
       </div>
 
@@ -231,69 +241,80 @@ export function ListsManager() {
         touching its status.
       </p>
 
-      {/* ── Create list form ── */}
+      {/* ── Create list modal ── */}
       {showForm && (
-        <div className="rounded-2xl bg-white p-5 shadow-sm space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-slate-700">Name</label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700">Description</label>
-            <input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700">Campaign</label>
-            <select
-              value={campaignId}
-              onChange={(e) =>
-                setCampaignId(e.target.value === "" ? "" : Number(e.target.value))
-              }
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            >
-              <option value="">Select a campaign…</option>
-              {campaigns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700">
-              Custom fields
-              <span className="ml-1 text-xs text-slate-400">
-                (optional — leave empty to store all CSV columns)
-              </span>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl space-y-3 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-base font-semibold">New list</h2>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">Name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">Description</label>
+              <input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">Campaign</label>
+              <select
+                value={campaignId}
+                onChange={(e) =>
+                  setCampaignId(e.target.value === "" ? "" : Number(e.target.value))
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              >
+                <option value="">Select a campaign…</option>
+                {campaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Custom fields
+                <span className="ml-1 text-xs text-slate-400">
+                  (optional — leave empty to store all CSV columns)
+                </span>
+              </label>
+              <div className="mt-1">
+                <FieldsEditor fields={fields} onChange={setFields} />
+              </div>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={active === "Y"}
+                onChange={(e) => setActive(e.target.checked ? "Y" : "N")}
+                className="accent-indigo-600"
+              />
+              <span className="font-medium text-slate-700">Active (dialable) immediately</span>
             </label>
-            <div className="mt-1">
-              <FieldsEditor fields={fields} onChange={setFields} />
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={create}
+                disabled={saving}
+                className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? "Creating…" : "Create list"}
+              </button>
+              <button
+                onClick={() => setShowForm(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
             </div>
           </div>
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={active === "Y"}
-              onChange={(e) => setActive(e.target.checked ? "Y" : "N")}
-              className="accent-indigo-600"
-            />
-            <span className="font-medium text-slate-700">Active (dialable) immediately</span>
-          </label>
-          <button
-            onClick={create}
-            disabled={saving}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {saving ? "Creating…" : "Create list"}
-          </button>
         </div>
       )}
 
