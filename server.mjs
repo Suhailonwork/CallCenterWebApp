@@ -42,6 +42,10 @@ function loadEnv() {
 loadEnv();
 
 const dev = !process.argv.includes("prod");
+// NODE_ENV must follow the mode Next actually runs in. A NODE_ENV=production
+// copied in from .env makes Next's dev CSS loader emit raw CSS, which fails
+// with "Module parse failed" whenever a stylesheet is recompiled.
+process.env.NODE_ENV = dev ? "development" : "production";
 const port = Number(process.env.PORT || 3000);
 const secret = new TextEncoder().encode(
   process.env.JWT_SECRET ?? "dev-insecure-secret-change-me",
