@@ -11,18 +11,18 @@ echo "================ 3. AOR contacts / qualify status =================="
 asterisk -rx "pjsip show aors" 2>&1
 echo
 echo "================ 4. Rows in the realtime DB tables ================="
-mysql -u root -pPassword123 callcenter -e \
+mysql -u root -p callcenter -e \
  "SELECT 'ps_endpoints' tbl, id FROM ps_endpoints
   UNION ALL SELECT 'ps_aors', id FROM ps_aors
   UNION ALL SELECT 'ps_endpoint_id_ips', id FROM ps_endpoint_id_ips;" 2>&1
 echo
 echo "================ 5. Gateway rows in the app table =================="
-mysql -u root -pPassword123 callcenter -e \
+mysql -u root -p callcenter -e \
  "SELECT id, name, ip, port, status, asterisk_endpoint FROM gsm_gateways;" 2>&1
 echo
 echo "================ 6. ARI reachable + endpoint state ================="
 echo "(replace gw1 below with the asterisk_endpoint shown in step 5)"
-curl -s -u admin:adminsecret http://localhost:8088/ari/endpoints/PJSIP/gw1 || echo "  -> ARI not reachable"
+curl -s -u "admin:${ARI_PASS:?export ARI_PASS first}" http://localhost:8088/ari/endpoints/PJSIP/gw1 || echo "  -> ARI not reachable"
 echo
 echo "==================== VERDICT GUIDE ===================="
 echo "- Step 2 empty  => realtime not serving. Check step 1 (module) + step 4 (rows)."

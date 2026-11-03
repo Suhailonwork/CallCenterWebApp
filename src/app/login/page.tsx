@@ -5,13 +5,6 @@ import { useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
 import { Button } from '@/components/Button';
 
-const DEMO = [
-  { role: 'Admin', email: 'admin@cc.test' },
-  { role: 'Manager', email: 'manager1@cc.test' },
-  { role: 'Team Lead', email: 'tl1@cc.test' },
-  { role: 'Employee', email: 'emp1@cc.test' },
-];
-
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -83,26 +76,6 @@ export default function LoginPage() {
           </Button>
         </form>
 
-        {/* <div className="mt-6 rounded-lg bg-slate-50 p-3">
-          <p className="mb-2 text-xs font-semibold text-slate-500">
-            Demo accounts — password: Password123!
-          </p>
-          <div className="space-y-1">
-            {DEMO.map((d) => (
-              <button
-                key={d.email}
-                onClick={() => {
-                  setEmail(d.email);
-                  setPassword('Password123!');
-                }}
-                className="flex w-full justify-between rounded px-2 py-1 text-xs hover:bg-slate-200"
-              >
-                <span className="font-medium text-slate-600">{d.role}</span>
-                <span className="text-slate-500">{d.email}</span>
-              </button>
-            ))}
-          </div>
-        </div> */}
       </div>
     </div>
   );

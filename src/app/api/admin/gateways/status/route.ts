@@ -17,7 +17,7 @@ export async function GET() {
 
   const ariUrl  = process.env.ARI_URL  ?? 'http://localhost:8088';
   const ariUser = process.env.ARI_USER ?? 'admin';
-  const ariPass = process.env.ARI_PASS ?? 'adminsecret';
+  const ariPass = process.env.ARI_PASS ?? '';
 
   // Get all gateways with asterisk_endpoint set
   const gateways = await query<{ id: number; name: string }>(

@@ -3,11 +3,35 @@ import { NextResponse } from 'next/server';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { queryOne } from '@/lib/db';
 import { tlOwnsCampaign } from '@/lib/groups';
 
 export const runtime = 'nodejs';
+
+/**
+ * The file as a web stream. Hand-written because Readable.toWeb() throws
+ * "Controller is already closed" whenever the browser abandons a range request,
+ * which an audio player does on every seek.
+ */
+function fileBody(path: string, start: number, end: number): ReadableStream<Uint8Array> {
+  const file = createReadStream(path, { start, end });
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      file.on('data', (chunk) => {
+        controller.enqueue(chunk as Buffer);
+        if ((controller.desiredSize ?? 0) <= 0) file.pause();
+      });
+      file.once('end', () => controller.close());
+      file.once('error', (e) => controller.error(e));
+    },
+    pull() {
+      file.resume();
+    },
+    cancel() {
+      file.destroy();
+    },
+  });
+}
 
 /**
  * GET /api/recordings/[filename]
@@ -94,9 +118,5 @@ export async function GET(
   }
   headers['Content-Length'] = String(size === 0 ? 0 : end - start + 1);
 
-  const body =
-    size === 0
-      ? null
-      : (Readable.toWeb(createReadStream(fullPath, { start, end })) as unknown as ReadableStream);
-  return new NextResponse(body, { status, headers });
+  return new NextResponse(size === 0 ? null : fileBody(fullPath, start, end), { status, headers });
 }

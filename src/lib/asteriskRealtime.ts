@@ -32,7 +32,7 @@ export function gwEndpoint(gatewayId: number): string {
 async function reloadAndQualifyGateway(endpoint: string): Promise<void> {
   const ariUrl = process.env.ARI_URL ?? "http://127.0.0.1:8088";
   const ariUser = process.env.ARI_USER ?? "admin";
-  const ariPass = process.env.ARI_PASS ?? "adminsecret";
+  const ariPass = process.env.ARI_PASS ?? "";
   const auth =
     "Basic " + Buffer.from(`${ariUser}:${ariPass}`).toString("base64");
 

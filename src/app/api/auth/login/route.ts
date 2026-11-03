@@ -7,6 +7,7 @@ import { ok, fail } from '@/lib/api';
 import { logAudit, clientIp } from '@/lib/audit';
 import { openSession } from '@/lib/sessions';
 import { recordLogin } from '@/lib/attendance';
+import { clearLoginFailures, loginBlocked, recordLoginFailure } from '@/lib/loginThrottle';
 import type { Role } from '@/types';
 
 export const runtime = 'nodejs';
@@ -32,20 +33,30 @@ export async function POST(req: Request) {
 
   const { email, password } = parsed.data;
 
+  const ip = clientIp();
+  if (loginBlocked(email, ip)) {
+    await logAudit({ userId: null, action: 'login_throttled', entity: 'users', details: { email } });
+    return fail('Too many failed attempts. Try again in 15 minutes.', 429);
+  }
+
   const user = await queryOne<UserRow>(
     'SELECT id, name, email, role, password_hash, is_active FROM users WHERE email = ?',
     [email],
   );
   if (!user || !user.is_active) {
+    recordLoginFailure(email, ip);
     await logAudit({ userId: user?.id ?? null, action: 'login_failed', entity: 'users', details: { email } });
     return fail('Invalid credentials', 401);
   }
 
   const valid = await verifyPassword(password, user.password_hash);
   if (!valid) {
+    recordLoginFailure(email, ip);
     await logAudit({ userId: user.id, action: 'login_failed', entity: 'users', entityId: user.id, details: { email } });
     return fail('Invalid credentials', 401);
   }
+
+  clearLoginFailures(email, ip);
 
   // Start a login session for agents (used for login-hours tracking).
   if (user.role === 'employee') {

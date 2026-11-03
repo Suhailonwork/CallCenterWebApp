@@ -328,7 +328,7 @@ app.prepare().then(() => {
   const ari = startAri({
     ariUrl: process.env.ARI_URL || "http://127.0.0.1:8088",
     ariUser: process.env.ARI_USER || "admin",
-    ariPass: process.env.ARI_PASS || "adminsecret",
+    ariPass: process.env.ARI_PASS || "",
     ariApp: process.env.ARI_APP || "callapp",
     browserEndpoint: process.env.BROWSER_ENDPOINT || "6001",
     outboundPrefix: process.env.OUTBOUND_PREFIX || "",

@@ -7,3 +7,14 @@ build
 *.log
 .DS_Store
 next-env.d.ts
+
+# Never commit these: customer data, private keys, live Asterisk config
+*.key
+*.pem
+*.sql.gz
+*.tar.gz
+*.bak
+/dialer-live.sql
+/asterisk/
+/asterisk-config/keys/
+.env.*
