@@ -122,7 +122,7 @@ function uploadedValues(lead: ExportLead): [string, string][] {
  * Split a saved wrap-up note into what the agent typed and the line the Dialer
  * appends to it: "[PTP - Promise to Pay | amt:500 date:2026-11-05 mode:UPI]".
  */
-function parseNote(note: string | null) {
+export function parseNote(note: string | null) {
   const text = (note ?? '').trim();
   const m = text.match(/\[([^\[\]]*)\]\s*$/);
   if (!m) return { text, code: '', reason: '', amount: '', payDate: '', payMode: '' };

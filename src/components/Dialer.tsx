@@ -1130,6 +1130,7 @@ import {
   AlertTriangle,
   Coffee,
   Play,
+  History,
 } from "lucide-react";
 import { SipPhone, type CallState } from "@/lib/sipPhone";
 import { getSocket, useSocketEvent } from "@/lib/useSocket";
@@ -1144,6 +1145,7 @@ import {
 import { isEngineDriven, isPredictive } from "@/lib/dialerModes";
 import type { Campaign, Contact, SipConfig, CallDisposition, DialerType } from "@/types";
 import { setCallActive } from "@/components/SessionGuard";
+import { CallHistoryPopup } from "@/components/CallHistoryPopup";
 
 /**
  * Normalize a contact's custom_fields into ordered [label, value] entries.
@@ -1246,6 +1248,7 @@ export function Dialer() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignsLoaded, setCampaignsLoaded] = useState(false);
   const [contact, setContact] = useState<Contact | null>(null);
+  const [historyFor, setHistoryFor] = useState<{ phone: string; name?: string | null } | null>(null);
   const [autoRunning, setAutoRunning] = useState(false);
   const [complete, setComplete] = useState(false);
   const [gatewayReachable, setGatewayReachable] = useState<boolean | null>(null);
@@ -1879,6 +1882,11 @@ export function Dialer() {
   }
 
   const isAutoCampaign = isEngineDriven(campaign?.dialer_type);
+  const contactPhone = contact?.phone_number;
+  useEffect(() => {
+    if (contactPhone) setHistoryFor((h) => (h && h.phone !== contactPhone ? null : h));
+  }, [contactPhone]);
+
   const customEntries = contact ? asEntries(contact.custom_fields).filter(([, v]) => v !== null && v !== "" && v !== undefined) : [];
 
   return (
@@ -2063,6 +2071,13 @@ export function Dialer() {
               <span className="inline-flex shrink-0 items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 ring-1 ring-inset ring-indigo-600/20">
                 Customer
               </span>
+              <button
+                onClick={() => setHistoryFor({ phone: contact.phone_number, name: contact.name })}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <History className="h-4 w-4" />
+                History
+              </button>
 
               {/* Manual mode: call this reserved contact, or move to the next */}
               {campaign?.dialer_type === "manual" && !inCall && !postCall && (
@@ -2163,6 +2178,14 @@ export function Dialer() {
       </div>
 
       {/* ===== Wrap-up modal ===== */}
+      {historyFor && (
+        <CallHistoryPopup
+          phone={historyFor.phone}
+          name={historyFor.name}
+          onClose={() => setHistoryFor(null)}
+        />
+      )}
+
       {postCall && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-900/5">
@@ -2180,6 +2203,13 @@ export function Dialer() {
                 <span className="mx-1">·</span>
                 <span className="tabular-nums">{fmt(postCall.durationSeconds)}</span>
               </p>
+              <button
+                onClick={() => setHistoryFor({ phone: postCall.phoneNumber, name: postCall.contactName })}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <History className="h-3.5 w-3.5" />
+                History
+              </button>
             </div>
 
             {/* Body */}
