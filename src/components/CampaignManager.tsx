@@ -1333,6 +1333,12 @@ export function CampaignManager({
                         Mark completed
                       </button>
                     )}
+                    <a
+                      href={`${apiBase}/campaigns/${c.id}/export`}
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium hover:bg-slate-50"
+                    >
+                      Download CSV
+                    </a>
                     <button
                       onClick={() => deleteCampaign(c)}
                       className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"

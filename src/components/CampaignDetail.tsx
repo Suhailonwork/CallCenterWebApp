@@ -108,9 +108,17 @@ export function CampaignDetail({
               </span>
             </div>
           </div>
-          <p className="text-xs text-slate-400">
-            Created {campaign.created_at}
-          </p>
+          <div className="flex flex-col items-end gap-2">
+            <a
+              href={`${apiBase}/campaigns/${id}/export`}
+              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+            >
+              Download CSV
+            </a>
+            <p className="text-xs text-slate-400">
+              Created {campaign.created_at}
+            </p>
+          </div>
         </div>
 
         {gateways.length > 0 && (

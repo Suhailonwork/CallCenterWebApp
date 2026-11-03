@@ -39,6 +39,15 @@ export function parseCsv(text: string): string[][] {
   return rows.filter((r) => r.some((cell) => cell.trim() !== ''));
 }
 
+/** One CSV cell, quoted when it has to be. */
+export function csvCell(v: unknown): string {
+  let s = v === null || v === undefined ? '' : String(v);
+  // Spreadsheet formula injection: a cell starting with =, @, + or - (other
+  // than a plain signed number, e.g. a +91 phone number) runs as a formula.
+  if (/^[=@\t\r]/.test(s) || /^[+-](?![\d\s().]*$)/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
 /**
  * Normalize a CSV header / template column name for matching:
  * trim, collapse internal whitespace runs to one space, case-insensitive.

@@ -1,6 +1,7 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { query, queryOne } from '@/lib/db';
 import { tlOwnsCampaign } from '@/lib/groups';
+import { csvCell } from '@/lib/csv';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,14 +25,6 @@ const TYPES = ['campaign', 'agent', 'gateway', 'contact', 'hourly', 'status'] as
 type ReportType = (typeof TYPES)[number];
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-function csvCell(v: unknown): string {
-  let s = v === null || v === undefined ? '' : String(v);
-  // Spreadsheet formula injection: a cell starting with =, @, + or - (other
-  // than a plain signed number, e.g. a +91 phone number) runs as a formula.
-  if (/^[=@\t\r]/.test(s) || /^[+-](?![\d\s().]*$)/.test(s)) s = `'${s}`;
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
 
 function toCsv(rows: Record<string, unknown>[]): string {
   if (rows.length === 0) return '';
