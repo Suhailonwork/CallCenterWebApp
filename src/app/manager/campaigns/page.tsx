@@ -12,8 +12,7 @@ export default async function ManagerCampaignsPage() {
   }>(
     `SELECT id, name, description, status
        FROM campaigns
-      WHERE status = 'active'
-      ORDER BY name`,
+      ORDER BY status = 'active' DESC, name`,
   );
   return <ManagerCampaigns campaigns={campaigns} />;
 }

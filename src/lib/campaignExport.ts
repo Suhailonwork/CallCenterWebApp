@@ -213,7 +213,12 @@ export function buildCampaignCsv(
   callbacks: Map<number, string>,
 ): string {
   const values = new Map<number, Map<string, string>>();
-  const seen = new Map<string, string>(); // match key -> header, first spelling wins
+  // match key -> header, first spelling wins. The two an upload needs are always
+  // there, even for a campaign with no leads left.
+  const seen = new Map<string, string>([
+    [normFieldName('Customer Name'), 'Customer Name'],
+    [normFieldName('Mobile No'), 'Mobile No'],
+  ]);
   for (const lead of leads) {
     const row = new Map<string, string>();
     for (const [k, v] of uploadedValues(lead)) {
