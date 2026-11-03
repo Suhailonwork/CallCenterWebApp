@@ -71,18 +71,172 @@ const STATUS_STYLE: Record<string, string> = {
 // dial_statuses multi-select and the recycle-rules editor. Statuses compare
 // case-insensitively in MySQL, so campaigns saved with the older lowercase
 // spellings keep working — normStatus() just tidies them up for display.
-const LEAD_STATUSES: { value: string; label: string; terminal?: boolean }[] = [
-  { value: "NEW", label: "NEW (never called)" },
-  { value: "NO_ANSWER", label: "No Answer (NA)" },
-  { value: "BUSY", label: "Busy (B)" },
-  { value: "FAILED", label: "Failed / Congestion" },
-  { value: "VOICEMAIL", label: "Voicemail / Machine" },
-  { value: "CANCELLED", label: "Cancelled / Abandoned" },
-  { value: "CALLBACK", label: "Callback due" },
-  { value: "WRONG_NUMBER", label: "Wrong Number", terminal: true },
-  { value: "CONNECTED", label: "Connected (talked)", terminal: true },
-  { value: "COMPLETED", label: "Completed (final)", terminal: true },
+//
+// `label` is deliberately SHORT — two words at most. It is what the checkbox
+// grid and the native <select> render, and a native option list sizes itself to
+// its longest entry, so a label like "Cancelled / Abandoned" dragged the open
+// dropdown wider than the modal. The sentence that explains the status lives in
+// `detail` and is revealed on click, where there is room for it.
+interface LeadStatusDef {
+  value: string;
+  /** Two words at most — this is what the grid and the <select> show. */
+  label: string;
+  /** The full explanation, shown when the operator opens the row. */
+  detail: string;
+  /** Normally the end of the lead's life; a rule may still redial it. */
+  terminal?: boolean;
+  /** A lead is only passing through: a call is being set up or is live. */
+  transient?: boolean;
+}
+
+const LEAD_STATUSES: LeadStatusDef[] = [
+  {
+    value: "NEW",
+    label: "New",
+    detail: "Never dialled since the list was last reset. The starting point of every lead.",
+  },
+  {
+    value: "NO_ANSWER",
+    label: "No Answer",
+    detail:
+      "Rang out with nobody picking up (NA). The most common outcome — it is what a GSM gateway reports for most unanswered calls, so it is the status most worth a recycle rule.",
+  },
+  {
+    value: "BUSY",
+    label: "Busy",
+    detail: "The line was engaged (B). Usually worth retrying soon — the customer is by their phone.",
+  },
+  {
+    value: "FAILED",
+    label: "Failed",
+    detail:
+      "The call never got through: congestion, a dead gateway, or a network error. Nothing is known about the customer, so a retry is normally right.",
+  },
+  {
+    value: "VOICEMAIL",
+    label: "Voicemail",
+    detail: "An answering machine picked up instead of a person.",
+  },
+  {
+    value: "CANCELLED",
+    label: "Cancelled",
+    detail:
+      "The customer answered but no agent was free, so the dialer dropped the call (an abandon). These are the leads most worth calling back — someone did pick up.",
+  },
+  {
+    value: "CALLBACK",
+    label: "Callback",
+    detail:
+      "An appointment an agent promised. Always dialled when it comes due, whatever is ticked here, and it jumps the queue.",
+  },
+  {
+    value: "WRONG_NUMBER",
+    label: "Wrong Number",
+    detail: "The number does not belong to the customer. Normally final.",
+    terminal: true,
+  },
+  {
+    value: "CONNECTED",
+    label: "Connected",
+    detail: "An agent actually talked to the customer. Normally final.",
+    terminal: true,
+  },
+  {
+    value: "COMPLETED",
+    label: "Completed",
+    detail: "The lead is finished — the campaign got what it wanted from it. Final.",
+    terminal: true,
+  },
+  // Transient statuses. They appear in the Lists page's status chips, so they
+  // belong here too: a lead that a crash left on one of them is invisible
+  // everywhere else and dialled by nothing, and ticking it is how an operator
+  // puts it back in the queue without a full list RESET. Doing so cannot touch
+  // a call in progress — the claim gate refuses any lead whose claim is still
+  // live, so only the strays are reachable.
+  {
+    value: "QUEUED",
+    label: "Queued",
+    detail:
+      "Reserved for a call that was never placed — normally for seconds. A lead stranded here has not been dialled, so ticking this picks it straight back up with nothing lost.",
+    transient: true,
+  },
+  {
+    value: "DIALING",
+    label: "Dialing",
+    detail:
+      "A call is being placed right now. A lead stranded here has already been dialled once, so ticking this will not bring it back — the recovery sweep lands it on Failed, and the Failed recycle rule is what retries it.",
+    transient: true,
+  },
+  {
+    value: "RINGING",
+    label: "Ringing",
+    detail:
+      "The customer's phone is ringing right now. Like Dialing, a lead stranded here has already been dialled — the recovery sweep lands it on Failed and the Failed rule retries it.",
+    transient: true,
+  },
 ];
+
+const STATUS_BY_VALUE = new Map(LEAD_STATUSES.map((s) => [s.value, s]));
+
+/** Short label for a status value, including ones no longer in the catalogue. */
+function statusLabel(value: string): string {
+  return STATUS_BY_VALUE.get(normStatus(value))?.label ?? normStatus(value);
+}
+
+/**
+ * One tickable status in the dial-statuses grid.
+ *
+ * The tile stays one line so ten of them fit a two-column grid without the
+ * modal growing a scrollbar; the "?" opens the explanation in place. The
+ * checkbox and the "?" are separate controls on purpose — reading what a status
+ * means must not change what the campaign dials.
+ */
+function StatusTile({
+  status,
+  checked,
+  open,
+  onToggle,
+  onOpen,
+}: {
+  status: LeadStatusDef;
+  checked: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+}) {
+  return (
+    <div
+      className={`rounded-lg border px-2.5 py-1.5 text-xs ${
+        checked ? "border-indigo-400 bg-indigo-50 text-indigo-800" : "border-slate-200"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={onToggle}
+            className="accent-indigo-600"
+          />
+          <span className="truncate font-medium">{status.label}</span>
+          {status.terminal && (
+            <span className="shrink-0 text-[10px] font-normal text-amber-600">final</span>
+          )}
+        </label>
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-expanded={open}
+          aria-label={`What does ${status.label} mean?`}
+          className="shrink-0 rounded-full border border-slate-300 px-1.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-100"
+        >
+          {open ? "−" : "?"}
+        </button>
+      </div>
+      {open && <p className="mt-1 text-[11px] leading-snug text-slate-500">{status.detail}</p>}
+    </div>
+  );
+}
 
 const DEFAULT_DIAL_STATUSES = ["NEW", "NO_ANSWER", "BUSY"];
 
@@ -178,6 +332,14 @@ export function CampaignManager({
   // Overrides of the disposition rules; a code with no entry keeps its default.
   const [dispoRules, setDispoRules] = useState<Record<string, DispositionRuleOverride>>({});
   const [dispoOpen, setDispoOpen] = useState(false);
+  // Which status tile / recycle row has its explanation expanded. One at a
+  // time: the tiles sit in a two-column grid and expanding several at once
+  // reflows the whole modal under the operator's cursor.
+  const [openStatus, setOpenStatus] = useState<string | null>(null);
+  const [openRuleIdx, setOpenRuleIdx] = useState<number | null>(null);
+  // The transient-status group stays folded away for a healthy campaign; it
+  // opens itself when the campaign is already dialing one of them.
+  const [stuckOpen, setStuckOpen] = useState(false);
   const [rulesBusy, setRulesBusy] = useState(false);
   // The mode of the campaign whose rules are open. Pacing controls follow it:
   // the mode decides which settings exist at all, and the API refuses the rest.
@@ -185,7 +347,7 @@ export function CampaignManager({
   // Pacing knobs, edited in the same modal as the dial rules.
   const [dialRatio, setDialRatio] = useState(1);
   const [maxAttempts, setMaxAttempts] = useState(0);
-  const [dialTimeout, setDialTimeout] = useState(45);
+  const [dialTimeout, setDialTimeout] = useState(25);
   const [wrapupSeconds, setWrapupSeconds] = useState(0);
   // "What will actually dial right now" — computed by the engine's own
   // predicate so the modal can never disagree with the dialer.
@@ -226,6 +388,7 @@ export function CampaignManager({
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Esc closes the top-most modal — not while busy, same as its Cancel button.
@@ -295,39 +458,53 @@ export function CampaignManager({
       setGroupId("");
       setShowForm(false);
       load();
+    } catch {
+      toast.error("Network error — campaign not created");
     } finally {
       setSaving(false);
     }
   }
 
+  // The gateways modal has no busy state of its own; this keeps a double click
+  // from firing two PATCHes.
+  const gwSaving = useRef(false);
   async function updateCampaignGateways() {
-    if (!editGwFor) return;
+    if (!editGwFor || gwSaving.current) return;
     const cleanIds = editGwIds.filter((id) => Number.isInteger(id) && id > 0);
     if (cleanIds.length === 0) {
       toast.warning("A campaign must keep at least one GSM gateway");
       return;
     }
-    const res = await fetch(`${apiBase}/campaigns/${editGwFor.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gatewayIds: cleanIds }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      toast.success("Gateways updated");
-      setEditGwFor(null);
-      load();
-    } else {
-      toast.error(data.error ?? "Update failed");
-      console.error("[updateCampaignGateways]", res.status, data);
+    gwSaving.current = true;
+    try {
+      const res = await fetch(`${apiBase}/campaigns/${editGwFor.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gatewayIds: cleanIds }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success("Gateways updated");
+        setEditGwFor(null);
+        load();
+      } else {
+        toast.error(data.error ?? "Update failed");
+        console.error("[updateCampaignGateways]", res.status, data);
+      }
+    } catch {
+      toast.error("Network error — gateways not updated");
+    } finally {
+      gwSaving.current = false;
     }
   }
 
   function openRules(c: CampaignWithGateways) {
-    setRulesFor(c);
-    setSelStatuses(
-      parseJsonField<string[]>(c.dial_statuses, DEFAULT_DIAL_STATUSES).map(normStatus),
+    const statuses = parseJsonField<string[]>(c.dial_statuses, DEFAULT_DIAL_STATUSES).map(
+      normStatus,
     );
+    setRulesFor(c);
+    setSelStatuses(statuses);
+    setStuckOpen(statuses.some((v) => STATUS_BY_VALUE.get(v)?.transient));
     setRecycleRules(
       parseJsonField<RecycleRule[]>(c.recycle_rules, []).map((r) => ({
         ...r,
@@ -336,9 +513,11 @@ export function CampaignManager({
     );
     setDispoRules(parseDispositionRules(c.disposition_rules));
     setDispoOpen(false);
+    setOpenStatus(null);
+    setOpenRuleIdx(null);
     setDialRatio(Number(c.dial_ratio ?? 1) || 1);
     setMaxAttempts(Number(c.retry_count ?? 0) || 0);
-    setDialTimeout(Number(c.dial_timeout_sec ?? 45) || 45);
+    setDialTimeout(Number(c.dial_timeout_sec ?? 25) || 25);
     setWrapupSeconds(Number(c.wrapup_seconds ?? 0) || 0);
     setLeadOrder(String(c.lead_order ?? "oldest"));
     setCallbacksOn(Number(c.callbacks_enabled ?? 1) === 1);
@@ -387,9 +566,16 @@ export function CampaignManager({
     const t = setTimeout(() => {
       loadDiag(campaignId, {
         dial_statuses: selStatuses,
-        // Half-typed rows would fail validation and blank the panel mid-edit.
+        // Half-typed rows would fail validation and blank the panel mid-edit;
+        // a duplicate status would be refused outright, so drop it here too —
+        // the preview should show what the campaign WOULD dial, and a dropped
+        // duplicate changes nothing about that.
         recycle_rules: recycleRules.filter(
-          (r) => r.status && Number(r.delay_min) >= 1 && Number(r.max_attempts) >= 1,
+          (r, i) =>
+            r.status &&
+            Number(r.delay_min) >= 1 &&
+            Number(r.max_attempts) >= 1 &&
+            !duplicateRuleIdx.includes(i),
         ),
         disposition_rules: Object.keys(dispoRules).length > 0 ? dispoRules : null,
         retry_count: Number(maxAttempts) || 0,
@@ -482,6 +668,15 @@ export function CampaignManager({
         return;
       }
     }
+    // One rule per status — the engine keeps the first and drops the rest, so
+    // saving a duplicate would quietly throw the operator's second rule away.
+    if (duplicateRuleIdx.length > 0) {
+      toast.warning(
+        `Two recycle rules for ${statusLabel(recycleRules[duplicateRuleIdx[0]].status)} — ` +
+          `only the first would apply. Remove the duplicate or edit the original.`,
+      );
+      return;
+    }
     // Nothing to dial guard: no dial status AND no recycle rule.
     if (selStatuses.length === 0 && recycleRules.length === 0) {
       toast.warning(
@@ -558,22 +753,29 @@ export function CampaignManager({
         return;
       }
       setRulesFor(null);
+    } catch {
+      toast.error("Network error — dial rules not saved");
     } finally {
       setRulesBusy(false);
     }
   }
 
   async function setStatus(id: number, status: string) {
-    const res = await fetch(`${apiBase}/campaigns/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
-    });
-    if (res.ok) {
-      toast.success("Campaign updated");
-      load();
-    } else {
-      toast.error("Update failed");
+    try {
+      const res = await fetch(`${apiBase}/campaigns/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (res.ok) {
+        toast.success("Campaign updated");
+        load();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Update failed");
+      }
+    } catch {
+      toast.error("Network error — campaign not updated");
     }
   }
 
@@ -586,13 +788,17 @@ export function CampaignManager({
       )
     )
       return;
-    const res = await fetch(`${apiBase}/campaigns/${c.id}`, { method: "DELETE" });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) return void toast.error(data.error ?? "Delete failed");
-    toast.success(
-      `Campaign deleted (${data.deletedLists ?? 0} lists, ${data.deletedLeads ?? 0} leads removed)`,
-    );
-    load();
+    try {
+      const res = await fetch(`${apiBase}/campaigns/${c.id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return void toast.error(data.error ?? "Delete failed");
+      toast.success(
+        `Campaign deleted (${data.deletedLists ?? 0} lists, ${data.deletedLeads ?? 0} leads removed)`,
+      );
+      load();
+    } catch {
+      toast.error("Network error — campaign not deleted");
+    }
   }
 
   async function openUpload(c: CampaignWithGateways) {
@@ -604,16 +810,20 @@ export function CampaignManager({
     setNewListFields([...DEFAULT_LIST_FIELDS]);
     setUploadLists([]);
     setUploadListId("new");
-    const res = await fetch(`${apiBase}/lists?campaignId=${c.id}`);
-    const data = await res.json().catch(() => ({}));
-    // Ignore a response that lost the race to a newer openUpload().
-    if (seq !== uploadReq.current) return;
-    if (res.ok) {
-      const lists: ListRow[] = data.lists ?? [];
-      setUploadLists(lists);
-      if (lists.length > 0) setUploadListId(lists[0].id);
-    } else {
-      toast.error(data.error ?? "Failed to load lists");
+    try {
+      const res = await fetch(`${apiBase}/lists?campaignId=${c.id}`);
+      const data = await res.json().catch(() => ({}));
+      // Ignore a response that lost the race to a newer openUpload().
+      if (seq !== uploadReq.current) return;
+      if (res.ok) {
+        const lists: ListRow[] = data.lists ?? [];
+        setUploadLists(lists);
+        if (lists.length > 0) setUploadListId(lists[0].id);
+      } else {
+        toast.error(data.error ?? "Failed to load lists");
+      }
+    } catch {
+      if (seq === uploadReq.current) toast.error("Failed to load lists");
     }
   }
 
@@ -713,6 +923,34 @@ export function CampaignManager({
   const deadEndStatuses = RETRYABLE_OUTCOMES.filter(
     (s) => !recycleRules.some((r) => normStatus(r.status) === s),
   );
+
+  // Ticked statuses that normally end a lead's life — named in the warning so
+  // the operator sees which box they just ticked, not a fixed sentence.
+  const tickedTerminal = selStatuses.filter((v) => STATUS_BY_VALUE.get(v)?.terminal);
+
+  const transientStatuses = LEAD_STATUSES.filter((s) => s.transient);
+  const tickedTransient = selStatuses.filter((v) => STATUS_BY_VALUE.get(v)?.transient);
+
+  // Statuses that already carry a recycle rule. parseRecycleRules() keeps the
+  // FIRST rule for a status and drops the rest, so a second rule for the same
+  // status is dead configuration — the editor has to stop it being written
+  // rather than let the operator believe it took effect.
+  const ruledStatuses = recycleRules.map((r) => normStatus(r.status));
+  const duplicateRuleIdx = recycleRules
+    .map((_, i) => i)
+    .filter((i) => ruledStatuses.indexOf(ruledStatuses[i]) !== i);
+
+  /** The status "+ Add rule" should start on: the first one still unruled. */
+  function nextUnruledStatus(): string | null {
+    const candidate = LEAD_STATUSES.find(
+      (s) =>
+        s.value !== "NEW" &&
+        !s.transient &&
+        !s.terminal &&
+        !ruledStatuses.includes(s.value),
+    );
+    return candidate?.value ?? null;
+  }
 
   return (
     <div className="space-y-4">
@@ -1300,40 +1538,89 @@ export function CampaignManager({
               not re-dial a lead that has already been called.
             </p>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
-              {LEAD_STATUSES.map((s) => {
-                const checked = selStatuses.includes(s.value);
-                return (
-                  <label
-                    key={s.value}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs ${
-                      checked
-                        ? "border-indigo-400 bg-indigo-50 text-indigo-800"
-                        : "border-slate-200 hover:bg-slate-50"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() =>
-                        setSelStatuses((prev) =>
-                          prev.includes(s.value)
-                            ? prev.filter((x) => x !== s.value)
-                            : [...prev, s.value],
-                        )
-                      }
-                      className="accent-indigo-600"
-                    />
-                    <span className="font-medium">{s.label}</span>
-                  </label>
-                );
-              })}
+              {LEAD_STATUSES.filter((s) => !s.transient).map((s) => (
+                <StatusTile
+                  key={s.value}
+                  status={s}
+                  checked={selStatuses.includes(s.value)}
+                  open={openStatus === s.value}
+                  onToggle={() =>
+                    setSelStatuses((prev) =>
+                      prev.includes(s.value)
+                        ? prev.filter((x) => x !== s.value)
+                        : [...prev, s.value],
+                    )
+                  }
+                  onOpen={() =>
+                    setOpenStatus((cur) => (cur === s.value ? null : s.value))
+                  }
+                />
+              ))}
             </div>
-            {selStatuses.some(
-              (v) => LEAD_STATUSES.find((s) => s.value === v)?.terminal,
-            ) && (
+
+            {/* Transient statuses: hidden until they actually matter, because
+                for a healthy campaign they are noise. A lead resting on one is
+                a crash leftover, and this is the only screen that can put it
+                back in the queue. */}
+            <div className="mt-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-slate-600">
+                  Stuck mid-call statuses
+                  {tickedTransient.length > 0 && (
+                    <span className="ml-1.5 rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
+                      {tickedTransient.length} on
+                    </span>
+                  )}
+                </p>
+                <button
+                  onClick={() => setStuckOpen((v) => !v)}
+                  className="shrink-0 rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50"
+                >
+                  {stuckOpen ? "Hide" : `Show (${transientStatuses.length})`}
+                </button>
+              </div>
+              {stuckOpen && (
+                <>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    A lead passes through these only while a call is being set up
+                    — seconds, normally. Leads the Lists page shows resting on one
+                    were stranded by a crash. The dialer&apos;s recovery sweep
+                    clears them within a couple of minutes whenever the engine is
+                    running, and a list <b>RESET</b> clears them too; ticking one
+                    here is the direct route. A call in progress is never
+                    affected, because the dialer refuses any lead whose claim is
+                    still live.
+                  </p>
+                  <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                    {transientStatuses.map((s) => (
+                      <StatusTile
+                        key={s.value}
+                        status={s}
+                        checked={selStatuses.includes(s.value)}
+                        open={openStatus === s.value}
+                        onToggle={() =>
+                          setSelStatuses((prev) =>
+                            prev.includes(s.value)
+                              ? prev.filter((x) => x !== s.value)
+                              : [...prev, s.value],
+                          )
+                        }
+                        onOpen={() =>
+                          setOpenStatus((cur) => (cur === s.value ? null : s.value))
+                        }
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {tickedTerminal.length > 0 && (
               <p className="mt-1 text-xs text-amber-600">
-                ⚠ Connected / Wrong Number are usually final — including them
-                re-dials closed leads after a reset.
+                ⚠ {tickedTerminal.map(statusLabel).join(" / ")}{" "}
+                {tickedTerminal.length === 1 ? "is" : "are"} usually final —
+                including {tickedTerminal.length === 1 ? "it" : "them"} re-dials
+                closed leads after a reset.
               </p>
             )}
             {selStatuses.length === 0 && (
@@ -1345,8 +1632,9 @@ export function CampaignManager({
             {deadEndStatuses.length > 0 && (
               <p className="mt-1 text-xs text-amber-600">
                 ⚠ A lead that lands on{" "}
-                <b>{deadEndStatuses.join(", ")}</b> stops being dialled — there
-                is no recycle rule for it. Add one below to keep retrying.
+                <b>{deadEndStatuses.map(statusLabel).join(", ")}</b> stops being
+                dialled — there is no recycle rule for it. Add one below to keep
+                retrying.
               </p>
             )}
 
@@ -1355,14 +1643,27 @@ export function CampaignManager({
                 <p className="text-sm font-medium text-slate-700">
                   Lead recycle (auto-retry)
                 </p>
+                {/* Starts on a status that has no rule yet. The old fixed
+                    "NO_ANSWER" default handed the operator a duplicate the
+                    moment No Answer was already covered — and a duplicate is
+                    dropped on save, so the new row looked real and did
+                    nothing. Disabled once every status is covered. */}
                 <button
-                  onClick={() =>
+                  onClick={() => {
+                    const status = nextUnruledStatus();
+                    if (!status) return;
                     setRecycleRules((r) => [
                       ...r,
-                      { status: "NO_ANSWER", delay_min: 60, max_attempts: 3 },
-                    ])
+                      { status, delay_min: 60, max_attempts: 3 },
+                    ]);
+                  }}
+                  disabled={nextUnruledStatus() === null}
+                  title={
+                    nextUnruledStatus() === null
+                      ? "Every retryable status already has a rule"
+                      : undefined
                   }
-                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50"
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   + Add rule
                 </button>
@@ -1379,74 +1680,134 @@ export function CampaignManager({
                 </p>
               ) : (
                 <div className="mt-2 space-y-1.5">
-                  {recycleRules.map((r, i) => (
-                    <div key={i} className="flex items-center gap-1.5 text-xs">
-                      <select
-                        value={r.status}
-                        onChange={(e) =>
-                          setRecycleRules((rules) =>
-                            rules.map((x, j) =>
-                              j === i ? { ...x, status: e.target.value } : x,
-                            ),
-                          )
-                        }
-                        className="flex-1 rounded-lg border border-slate-300 px-2 py-1.5"
+                  {recycleRules.map((r, i) => {
+                    const def = STATUS_BY_VALUE.get(normStatus(r.status));
+                    const dup = duplicateRuleIdx.includes(i);
+                    return (
+                      <div
+                        key={i}
+                        className={`rounded-lg text-xs ${
+                          dup ? "bg-red-50 p-1.5 ring-1 ring-inset ring-red-200" : ""
+                        }`}
                       >
-                        {LEAD_STATUSES.filter((s) => s.value !== "NEW").map((s) => (
-                          <option key={s.value} value={s.value}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </select>
-                      <label className="flex items-center gap-1">
-                        after
-                        <input
-                          type="number"
-                          min={1}
-                          value={r.delay_min}
-                          onChange={(e) =>
-                            setRecycleRules((rules) =>
-                              rules.map((x, j) =>
-                                j === i
-                                  ? { ...x, delay_min: Number(e.target.value) }
-                                  : x,
-                              ),
-                            )
-                          }
-                          className="w-16 rounded-lg border border-slate-300 px-2 py-1.5"
-                        />
-                        min
-                      </label>
-                      <label className="flex items-center gap-1">
-                        max
-                        <input
-                          type="number"
-                          min={1}
-                          value={r.max_attempts}
-                          onChange={(e) =>
-                            setRecycleRules((rules) =>
-                              rules.map((x, j) =>
-                                j === i
-                                  ? { ...x, max_attempts: Number(e.target.value) }
-                                  : x,
-                              ),
-                            )
-                          }
-                          className="w-14 rounded-lg border border-slate-300 px-2 py-1.5"
-                        />
-                        tries
-                      </label>
-                      <button
-                        onClick={() =>
-                          setRecycleRules((rules) => rules.filter((_, j) => j !== i))
-                        }
-                        className="rounded-lg border border-red-200 px-2 py-1.5 font-medium text-red-600 hover:bg-red-50"
-                        title="Remove rule"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            value={r.status}
+                            onChange={(e) =>
+                              setRecycleRules((rules) =>
+                                rules.map((x, j) =>
+                                  j === i ? { ...x, status: e.target.value } : x,
+                                ),
+                              )
+                            }
+                            className={`min-w-0 flex-1 rounded-lg border px-2 py-1.5 ${
+                              dup ? "border-red-300 text-red-700" : "border-slate-300"
+                            }`}
+                          >
+                            {/* "NEW" is excluded (a never-called lead is not being
+                                recycled) and so are the transient statuses — a lead
+                                resting on one is a crash leftover, which a dial
+                                status recovers; a retry timer measured from
+                                last_call_at would not. Statuses already spoken for
+                                are marked, because the save keeps only the first
+                                rule per status. */}
+                            {LEAD_STATUSES.filter((s) => s.value !== "NEW" && !s.transient).map(
+                              (s) => {
+                                const taken =
+                                  s.value !== normStatus(r.status) &&
+                                  ruledStatuses.includes(s.value);
+                                return (
+                                  <option key={s.value} value={s.value} disabled={taken}>
+                                    {s.label}
+                                    {taken ? " — already has a rule" : ""}
+                                  </option>
+                                );
+                              },
+                            )}
+                          </select>
+                          <label className="flex items-center gap-1">
+                            after
+                            <input
+                              type="number"
+                              min={1}
+                              value={r.delay_min}
+                              onChange={(e) =>
+                                setRecycleRules((rules) =>
+                                  rules.map((x, j) =>
+                                    j === i
+                                      ? { ...x, delay_min: Number(e.target.value) }
+                                      : x,
+                                  ),
+                                )
+                              }
+                              className="w-16 rounded-lg border border-slate-300 px-2 py-1.5"
+                            />
+                            min
+                          </label>
+                          <label className="flex items-center gap-1">
+                            max
+                            <input
+                              type="number"
+                              min={1}
+                              value={r.max_attempts}
+                              onChange={(e) =>
+                                setRecycleRules((rules) =>
+                                  rules.map((x, j) =>
+                                    j === i
+                                      ? { ...x, max_attempts: Number(e.target.value) }
+                                      : x,
+                                  ),
+                                )
+                              }
+                              className="w-14 rounded-lg border border-slate-300 px-2 py-1.5"
+                            />
+                            tries
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOpenRuleIdx((cur) => (cur === i ? null : i))
+                            }
+                            aria-expanded={openRuleIdx === i}
+                            aria-label={`What does ${def?.label ?? r.status} mean?`}
+                            className="shrink-0 rounded-full border border-slate-300 px-1.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-100"
+                          >
+                            {openRuleIdx === i ? "−" : "?"}
+                          </button>
+                          <button
+                            onClick={() => {
+                              setRecycleRules((rules) => rules.filter((_, j) => j !== i));
+                              setOpenRuleIdx(null);
+                            }}
+                            className="shrink-0 rounded-lg border border-red-200 px-2 py-1.5 font-medium text-red-600 hover:bg-red-50"
+                            title="Remove rule"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        {dup && (
+                          <p className="mt-1 text-[11px] font-medium text-red-700">
+                            {statusLabel(r.status)} already has a rule above. Only the
+                            first one is kept — delete this row, or raise the first
+                            rule&apos;s delay or tries instead.
+                          </p>
+                        )}
+                        {openRuleIdx === i && def && (
+                          <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                            {def.detail}
+                            {def.terminal && (
+                              <>
+                                {" "}
+                                <span className="text-amber-600">
+                                  Normally final — a rule here deliberately re-opens it.
+                                </span>
+                              </>
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

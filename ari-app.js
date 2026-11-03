@@ -1277,6 +1277,20 @@ module.exports = function startAri(config) {
     return rows[0] || null;
   }
 
+  /** users.id behind a SIP extension, so per-agent socket events reach only them. */
+  async function agentIdForExtension(extension) {
+    if (!extension) return null;
+    try {
+      const [rows] = await db.query(
+        "SELECT user_id FROM employees WHERE sip_extension = ? LIMIT 1",
+        [String(extension)],
+      );
+      return rows[0] ? rows[0].user_id : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function handleOutbound(client, browserChannel) {
     const dialed = (browserChannel.dialplan && browserChannel.dialplan.exten) || "";
     const target = (outboundPrefix || "") + dialed;
@@ -1351,12 +1365,41 @@ module.exports = function startAri(config) {
     const outId = "out-" + browserChannel.id;
     const outLeg = client.Channel(outId);
 
+    // Every listener this call adds stays on the ARI client until it is
+    // removed (node-ari-client never drops them on its own), so a long-running
+    // dialer would keep one set per call forever and walk them all on every
+    // channel event.
+    const detachListeners = () => {
+      for (const ev of ["ChannelStateChange", "StasisStart", "StasisEnd", "ChannelDestroyed"]) {
+        try {
+          outLeg.removeAllListeners(ev);
+        } catch {
+          /* ignore */
+        }
+      }
+      for (const ev of ["StasisEnd", "ChannelDestroyed"]) {
+        try {
+          browserChannel.removeAllListeners(ev);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
     const end = async () => {
       if (done) return;
       done = true;
       outbound.delete(outId);
       outbound.delete(browserChannel.id);
+      try {
+        await finishOutbound();
+      } finally {
+        detachListeners();
+      }
+    };
 
+    /** The body of end() — runs once, behind its done-guard. */
+    const finishOutbound = async () => {
       // Ringback pakka band karo. Warna jab customer apni taraf se phone rakhe
       // to browser me tone bajti reh jaati hai.
       try {
@@ -1380,12 +1423,17 @@ module.exports = function startAri(config) {
           } else {
             // Manual box se type kiya hua number — koi lead nahi, isliye
             // extension ke through target karte hain.
-            globalThis.__ccio.emit("call-ended-ext", {
-              extension: callerExt,
-              phone: dialed,
-              answered,
-              cause: outcome.causeText || outcome.causeCode || null,
-            });
+            // Only that agent's own sockets: a broadcast would hand every
+            // connected browser the number this agent just dialled.
+            const agentId = await agentIdForExtension(callerExt);
+            if (agentId) {
+              globalThis.__ccio.to("agent:" + agentId).emit("call-ended-ext", {
+                extension: callerExt,
+                phone: dialed,
+                answered,
+                cause: outcome.causeText || outcome.causeCode || null,
+              });
+            }
           }
         }
       } catch (e) {
@@ -1546,6 +1594,21 @@ module.exports = function startAri(config) {
     const end = async () => {
       if (done) return;
       done = true;
+      // Drop this call's ARI listeners (see detachListeners in handleOutbound).
+      for (const ev of ["StasisStart", "StasisEnd", "ChannelDestroyed"]) {
+        try {
+          browserLeg.removeAllListeners(ev);
+        } catch {
+          /* ignore */
+        }
+      }
+      for (const ev of ["StasisEnd", "ChannelDestroyed"]) {
+        try {
+          trunkChannel.removeAllListeners(ev);
+        } catch {
+          /* ignore */
+        }
+      }
       try {
         await browserLeg.hangup();
       } catch {
@@ -1677,12 +1740,31 @@ module.exports = function startAri(config) {
     };
     predictive.set(attemptId, info);
 
+    // Hard ring cap. Asterisk's originate timeout is not enough on a GSM
+    // gateway: the operator's "subscriber not answering / switched off"
+    // recording arrives as early media and can keep the leg up well past it.
+    // If nobody has answered by the deadline we hang up ourselves.
+    const ringSec = Math.max(10, Number(timeoutSec) || 25);
+    const ringTimer = setTimeout(() => {
+      if (info.answered || info.finished) return;
+      ch.hangup({ reason: "no_answer" }).catch(() => {});
+    }, ringSec * 1000);
+    if (typeof ringTimer.unref === "function") ringTimer.unref();
+
     // Ringing is picked up by the client-level ChannelStateChange handler in
     // connect() — see the comment there for why a per-channel one cannot work.
 
     // Fires whether or not the customer ever answered — the single place the
     // attempt is reported as finished when no agent got involved.
     ch.on("ChannelDestroyed", (event) => {
+      clearTimeout(ringTimer);
+      // A channel is destroyed once. Drop the listener whichever path finished
+      // the attempt, so it does not stay on the ARI client for good.
+      try {
+        ch.removeAllListeners("ChannelDestroyed");
+      } catch {
+        /* ignore */
+      }
       if (info.finished) return;
       info.finished = true;
       predictive.delete(attemptId);
@@ -1706,11 +1788,17 @@ module.exports = function startAri(config) {
         endpoint: "PJSIP/" + target + "@" + gatewayEndpoint,
         ...route,
         callerId: callerId || phone,
-        timeout: Math.max(10, Number(timeoutSec) || 45),
+        timeout: ringSec,
       });
     } catch (e) {
+      clearTimeout(ringTimer);
       predictive.delete(attemptId);
       info.finished = true;
+      try {
+        ch.removeAllListeners("ChannelDestroyed");
+      } catch {
+        /* ignore */
+      }
       throw e;
     }
     return attemptId;
@@ -1775,6 +1863,21 @@ module.exports = function startAri(config) {
     const end = async (event) => {
       if (done) return;
       done = true;
+      // Drop this call's ARI listeners (see detachListeners in handleOutbound).
+      for (const ev of ["StasisStart", "StasisEnd", "ChannelDestroyed"]) {
+        try {
+          agentLeg.removeAllListeners(ev);
+        } catch {
+          /* ignore */
+        }
+      }
+      for (const ev of ["StasisEnd", "ChannelDestroyed"]) {
+        try {
+          gsmChannel.removeAllListeners(ev);
+        } catch {
+          /* ignore */
+        }
+      }
       const { causeCode, causeText } = hangupInfo(event);
       if (!info.finished) {
         info.finished = true;

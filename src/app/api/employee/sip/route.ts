@@ -15,8 +15,6 @@ export async function GET() {
   if (!emp) return fail('No SIP extension configured for this account', 404);
 
   const sipServer = process.env.SIP_SERVER ?? '192.168.0.101';
-  console.log("SIP_WSS_URL =", process.env.SIP_WSS_URL);
-console.log("SIP_SERVER  =", process.env.SIP_SERVER);
   return ok({
     wssUrl: process.env.SIP_WSS_URL ?? `wss://${sipServer}:8089/ws`,
     sipServer,

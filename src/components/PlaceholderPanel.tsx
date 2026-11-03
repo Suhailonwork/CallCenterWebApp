@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
+import { resetSocket } from '@/lib/useSocket';
 
 interface Props {
   user: { name: string; email: string; role: string };
@@ -14,7 +15,13 @@ export function PlaceholderPanel({ user, title, phase, planned }: Props) {
   const router = useRouter();
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      toast.error('Could not sign out — check your connection and try again');
+      return;
+    }
+    resetSocket();
     toast.info('Signed out');
     router.replace('/login');
     router.refresh();

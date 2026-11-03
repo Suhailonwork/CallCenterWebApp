@@ -113,6 +113,8 @@ export function ListsManager() {
       setActive("Y");
       setShowForm(false);
       load();
+    } catch {
+      toast.error("Network error — list not created");
     } finally {
       setSaving(false);
     }
@@ -120,20 +122,24 @@ export function ListsManager() {
 
   async function toggleActive(l: ListRow) {
     const next = l.active === "Y" ? "N" : "Y";
-    const res = await fetch(`/api/admin/lists/${l.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: next }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      toast.success(
-        next === "Y"
-          ? `"${l.name}" is ON — its leads are dialable`
-          : `"${l.name}" is OFF — no new calls from this list`,
-      );
-      load();
-    } else toast.error(data.error ?? "Update failed");
+    try {
+      const res = await fetch(`/api/admin/lists/${l.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success(
+          next === "Y"
+            ? `"${l.name}" is ON — its leads are dialable`
+            : `"${l.name}" is OFF — no new calls from this list`,
+        );
+        load();
+      } else toast.error(data.error ?? "Update failed");
+    } catch {
+      toast.error("Network error — list not updated");
+    }
   }
 
   function openEdit(l: ListRow) {
@@ -165,6 +171,8 @@ export function ListsManager() {
       toast.success("List updated");
       setEditFor(null);
       load();
+    } catch {
+      toast.error("Network error — list not updated");
     } finally {
       setBusy(false);
     }
@@ -174,12 +182,16 @@ export function ListsManager() {
     const seq = ++resetReq.current;
     setResetFor(l);
     setResetPreview(null);
-    const res = await fetch(`/api/admin/lists/${l.id}/reset`);
-    const data = await res.json().catch(() => ({}));
-    // Drop a response the user has already navigated away from.
-    if (seq !== resetReq.current) return;
-    if (res.ok) setResetPreview(data);
-    else toast.error(data.error ?? "Failed to load reset preview");
+    try {
+      const res = await fetch(`/api/admin/lists/${l.id}/reset`);
+      const data = await res.json().catch(() => ({}));
+      // Drop a response the user has already navigated away from.
+      if (seq !== resetReq.current) return;
+      if (res.ok) setResetPreview(data);
+      else toast.error(data.error ?? "Failed to load reset preview");
+    } catch {
+      if (seq === resetReq.current) toast.error("Failed to load reset preview");
+    }
   }
 
   async function doReset() {
@@ -194,6 +206,8 @@ export function ListsManager() {
       );
       setResetFor(null);
       load();
+    } catch {
+      toast.error("Network error — list not reset");
     } finally {
       setBusy(false);
     }
@@ -205,16 +219,20 @@ export function ListsManager() {
         ? `Delete list "${l.name}" and its ${l.lead_count} leads? Call history is kept. This cannot be undone.`
         : `Delete list "${l.name}"? This cannot be undone.`;
     if (!window.confirm(msg)) return;
-    const res = await fetch(`/api/admin/lists/${l.id}`, { method: "DELETE" });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      toast.success(
-        data.deletedLeads > 0
-          ? `List deleted (${data.deletedLeads} leads removed)`
-          : "List deleted",
-      );
-      load();
-    } else toast.error(data.error ?? "Delete failed");
+    try {
+      const res = await fetch(`/api/admin/lists/${l.id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success(
+          data.deletedLeads > 0
+            ? `List deleted (${data.deletedLeads} leads removed)`
+            : "List deleted",
+        );
+        load();
+      } else toast.error(data.error ?? "Delete failed");
+    } catch {
+      toast.error("Network error — list not deleted");
+    }
   }
 
   function fmtDate(s: string | null | undefined) {

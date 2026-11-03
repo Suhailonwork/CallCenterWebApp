@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSocketEvent } from '@/lib/useSocket';
 
 type Agent = {
@@ -60,7 +60,10 @@ export default function AgentStatsTable() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const inFlight = useRef(false);
   const load = useCallback(async () => {
+    if (inFlight.current) return; // a slow response must not stack the 10s polls
+    inFlight.current = true;
     try {
       const res = await fetch('/api/admin/agent-stats', { cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to load stats');
@@ -79,6 +82,7 @@ export default function AgentStatsTable() {
     } catch (e: any) {
       setError(e?.message ?? 'Error loading stats');
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }, []);

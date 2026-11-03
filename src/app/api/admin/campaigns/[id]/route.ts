@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { authenticate, isError, ok, fail } from '@/lib/api';
+import { authenticate, isError, ok, fail, failValidation } from '@/lib/api';
 import { query, queryOne, pool } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import {
@@ -34,7 +34,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (!Number.isInteger(id)) return fail('Invalid campaign id');
 
   const parsed = schema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return fail('Invalid data');
+  if (!parsed.success) return failValidation(parsed.error, 'Invalid data');
   const d = parsed.data;
 
   // Dial rules must leave the campaign able to dial SOMETHING — reject when

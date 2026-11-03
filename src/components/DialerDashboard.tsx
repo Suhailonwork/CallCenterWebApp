@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   PhoneCall,
@@ -170,7 +170,12 @@ export function DialerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
 
-  const load = useCallback(async () => {
+  const inFlight = useRef(false);
+  const load = useCallback(async (background = false) => {
+    // A 2s poll against a query that can take longer must not stack requests,
+    // and a background tab has nothing to show them on.
+    if (inFlight.current || (background && document.hidden)) return;
+    inFlight.current = true;
     try {
       const res = await fetch("/api/admin/dialer/live", { cache: "no-store" });
       const json = await res.json();
@@ -182,13 +187,15 @@ export function DialerDashboard() {
       setError(null);
     } catch {
       setError("Network error");
+    } finally {
+      inFlight.current = false;
     }
   }, []);
 
   useEffect(() => {
     load();
     if (paused) return;
-    const t = setInterval(load, 2000);
+    const t = setInterval(() => load(true), 2000);
     return () => clearInterval(t);
   }, [load, paused]);
 

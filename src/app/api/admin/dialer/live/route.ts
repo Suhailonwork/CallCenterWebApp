@@ -11,9 +11,12 @@ export const dynamic = 'force-dynamic';
  * Combines the engine's in-memory state (calls on the wire right now, agent
  * states, gateway channel usage) with the database counters (dialable leads
  * left, today's outcomes), so the page is one request.
+ *
+ * Not open to Team Leads: it spans every campaign, calls and phone numbers
+ * included, and TL access everywhere else is limited to their own groups.
  */
 export async function GET() {
-  const u = await authenticate(['admin', 'manager', 'tl']);
+  const u = await authenticate(['admin', 'manager']);
   if (isError(u)) return u;
 
   const snap = dialerSnapshot();

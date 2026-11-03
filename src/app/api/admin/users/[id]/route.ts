@@ -32,6 +32,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (!parsed.success) return fail('Invalid data');
   const d = parsed.data;
 
+  // Same rule as DELETE: an admin who locks themselves out leaves nobody able
+  // to undo it.
+  if (id === u.id && d.isActive === false) {
+    return fail('You cannot deactivate your own account');
+  }
+
   const sets: string[] = [];
   const vals: any[] = [];
   if (d.name !== undefined) {
@@ -47,22 +53,27 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     vals.push(await hashPassword(d.password));
   }
   if (d.shiftId !== undefined) {
+    // A stale id would otherwise surface as a foreign-key 500.
+    if (d.shiftId && !(await queryOne('SELECT id FROM shifts WHERE id = ?', [d.shiftId]))) {
+      return fail('Selected shift not found');
+    }
     sets.push('shift_id = ?');
     vals.push(d.shiftId);
   }
   if (d.teamId !== undefined) {
-    sets.push('team_id = ?');
-    vals.push(d.teamId);
     let reportsTo: number | null = null;
-    if (d.teamId && (target.role === 'employee' || target.role === 'tl')) {
-      const team = await queryOne<any>(
+    if (d.teamId) {
+      const team = await queryOne<{ manager_id: number | null; tl_id: number | null }>(
         'SELECT manager_id, tl_id FROM teams WHERE id = ?',
         [d.teamId],
       );
-      if (team) {
+      if (!team) return fail('Selected team not found');
+      if (target.role === 'employee' || target.role === 'tl') {
         reportsTo = target.role === 'employee' ? team.tl_id : team.manager_id;
       }
     }
+    sets.push('team_id = ?');
+    vals.push(d.teamId);
     sets.push('reports_to = ?');
     vals.push(reportsTo);
   }

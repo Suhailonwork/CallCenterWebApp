@@ -11,7 +11,6 @@ import { pool } from './db';
 
 // Pool or a transaction connection — both expose .execute(). Lets callers
 // record the audit row inside the same transaction as the change itself.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SqlExecutor = { execute: (sql: string, values?: any[]) => Promise<any> };
 
 export interface AuditEntry {

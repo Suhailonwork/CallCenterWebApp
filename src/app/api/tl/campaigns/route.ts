@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { authenticate, isError, ok, fail } from '@/lib/api';
+import { authenticate, isError, ok, fail, failValidation } from '@/lib/api';
 import { query, pool } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import { groupIdsForTL, tlOwnsGroup } from '@/lib/groups';
@@ -84,7 +84,8 @@ export async function POST(req: Request) {
   if (isError(u)) return u;
 
   const parsed = createSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return fail('Invalid campaign data (a group is required)');
+  if (!parsed.success)
+    return failValidation(parsed.error, 'Invalid campaign data (a group is required)');
   const d = parsed.data;
 
   // RBAC: a TL may only create campaigns in groups they run.

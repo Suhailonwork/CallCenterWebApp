@@ -5,6 +5,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
 import { LiveRefresh } from './LiveRefresh';
 import { AttendanceHeartbeat } from './AttendanceHeartbeat';
+import { SessionGuard } from './SessionGuard';
+import { resetSocket } from '@/lib/useSocket';
 
 interface NavItem {
   href: string;
@@ -26,7 +28,14 @@ export function ConsoleShell({
   const router = useRouter();
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      toast.error('Could not sign out — check your connection and try again');
+      return;
+    }
+    // The realtime connection is bound to the session it opened with.
+    resetSocket();
     toast.info('Signed out');
     router.replace('/login');
     router.refresh();
@@ -36,6 +45,7 @@ export function ConsoleShell({
     <div className="flex min-h-screen">
       <LiveRefresh scopes={['calls', 'breaks']} />
       <AttendanceHeartbeat />
+      <SessionGuard />
       <aside className="flex w-56 shrink-0 flex-col bg-slate-900 text-slate-300">
         <div className="flex items-center gap-2 px-5 py-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">

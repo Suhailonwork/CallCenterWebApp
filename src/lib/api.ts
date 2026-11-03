@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { TOKEN_COOKIE, verifyToken } from './jwt';
 import { queryOne } from './db';
+import type { ZodError } from 'zod';
 import type { Role } from '@/types';
 
 export interface AuthedUser {
@@ -45,4 +46,19 @@ export function ok(data: unknown, status = 200) {
 
 export function fail(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
+}
+
+/**
+ * Turn a Zod failure into the message the operator actually needs.
+ *
+ * `fallback` stays the answer for the ordinary "the client sent garbage" case,
+ * where naming a field would only confuse. A `custom` issue is different: it
+ * comes from a rule the schema spells out in plain language — a duplicate
+ * recycle rule, say — and hiding it behind "Invalid data" leaves the operator
+ * staring at a form that looks right, with no idea which row the server
+ * refused.
+ */
+export function failValidation(error: ZodError, fallback: string) {
+  const spelled = error.issues.find((i) => i.code === 'custom');
+  return fail(spelled?.message ?? fallback);
 }

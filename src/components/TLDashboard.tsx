@@ -82,39 +82,41 @@ export function TLDashboard({
         {sorted.length === 0 ? (
           <p className="text-sm text-slate-400">No employees assigned to you.</p>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-slate-400">
-                <th className="pb-2">Employee</th>
-                <th className="pb-2">Status</th>
-                <th className="pb-2 text-right">Calls</th>
-                <th className="pb-2 text-right">Connected</th>
-                <th className="pb-2 text-right">Success</th>
-                <th className="pb-2 text-right">Talk time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((s) => (
-                <tr key={s.id} className="border-b border-slate-100 last:border-0">
-                  <td className="py-2 font-medium">{s.name}</td>
-                  <td className="py-2">
-                    <span
-                      className={
-                        'rounded-full px-2 py-0.5 text-xs font-medium ' +
-                        (STATUS_STYLE[s.status] ?? STATUS_STYLE.offline)
-                      }
-                    >
-                      {s.status.replace('_', ' ')}
-                    </span>
-                  </td>
-                  <td className="py-2 text-right">{s.calls}</td>
-                  <td className="py-2 text-right">{s.connected}</td>
-                  <td className="py-2 text-right">{s.successRate}%</td>
-                  <td className="py-2 text-right">{talk(s.talkSeconds)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-slate-400">
+                  <th className="pb-2">Employee</th>
+                  <th className="pb-2">Status</th>
+                  <th className="pb-2 text-right">Calls</th>
+                  <th className="pb-2 text-right">Connected</th>
+                  <th className="pb-2 text-right">Success</th>
+                  <th className="pb-2 text-right">Talk time</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sorted.map((s) => (
+                  <tr key={s.id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-2 font-medium">{s.name}</td>
+                    <td className="py-2">
+                      <span
+                        className={
+                          'rounded-full px-2 py-0.5 text-xs font-medium ' +
+                          (STATUS_STYLE[s.status] ?? STATUS_STYLE.offline)
+                        }
+                      >
+                        {s.status.replace('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right">{s.calls}</td>
+                    <td className="py-2 text-right">{s.connected}</td>
+                    <td className="py-2 text-right">{s.successRate}%</td>
+                    <td className="py-2 text-right">{talk(s.talkSeconds)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

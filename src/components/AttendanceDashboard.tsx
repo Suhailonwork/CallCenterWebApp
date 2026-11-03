@@ -119,11 +119,16 @@ export function AttendanceDashboard({ scope }: { scope: 'admin' | 'tl' }) {
     return p.toString();
   }, [preset, from, to, tlId, employeeId, status, q, page, isAdmin]);
 
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    // Filters change faster than the server answers and the 15s auto-refresh
+    // overlaps them; only the newest request may update the screen.
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const res = await fetch(`${base}?${queryString()}`);
       const json = await res.json();
+      if (seq !== loadSeq.current) return;
       if (res.ok) {
         setData(json);
         // Refresh the stable employee list only when not narrowed to one user.
@@ -137,8 +142,12 @@ export function AttendanceDashboard({ scope }: { scope: 'admin' | 'tl' }) {
       } else {
         toast.error(json.error ?? 'Failed to load attendance');
       }
+    } catch {
+      if (seq === loadSeq.current) {
+        toast.error('Failed to load attendance', { toastId: 'attendance-load' });
+      }
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, queryString]);
@@ -165,18 +174,22 @@ export function AttendanceDashboard({ scope }: { scope: 'admin' | 'tl' }) {
 
   async function forceLogout(userId: number, name: string) {
     if (!confirm(`Force logout ${name}? This closes their open attendance session.`)) return;
-    const res = await fetch('/api/admin/attendance/force-logout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      toast.error(json.error ?? 'Force logout failed');
-      return;
+    try {
+      const res = await fetch('/api/admin/attendance/force-logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(json.error ?? 'Force logout failed');
+        return;
+      }
+      toast.success(`${name} logged out`);
+      void load();
+    } catch {
+      toast.error('Network error — force logout failed');
     }
-    toast.success(`${name} logged out`);
-    void load();
   }
 
   function exportCsv() {

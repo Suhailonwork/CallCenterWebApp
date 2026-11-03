@@ -292,7 +292,7 @@ export function DashboardView({
             Welcome back, <span className="text-indigo-600">{userName}</span>
           </h1>
           <p className="mt-1 text-sm text-slate-500">
-            {format(today, 'EEEE, MMMM d')} · Here's your performance today.
+            {format(today, 'EEEE, MMMM d')} · Here&apos;s your performance today.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm ring-1 ring-slate-200">

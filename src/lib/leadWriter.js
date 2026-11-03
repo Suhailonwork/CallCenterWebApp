@@ -306,6 +306,16 @@ async function cancelReservation(db, leadId) {
  *  - DIALING/RINGING past the ring timeout -> FAILED + retry per the rules
  *  - CONNECTED past the on-call timeout    -> CANCELLED + retry per the rules
  *
+ * A lead on an in-flight status with NO claim at all (claimed_at IS NULL) is
+ * recovered too. Every transition into QUEUED / DIALING / RINGING / CONNECTED
+ * writes claimed_at = NOW() in the same statement, so that combination can only
+ * mean the claim was stripped from under a live row — the migration's
+ * stale-claim release used to do exactly that. Such a lead is the worst case
+ * there is: the claim query skips it (in-flight statuses are not dialable), a
+ * list RESET skips it, and this sweep used to skip it as well because of the
+ * `claimed_at IS NOT NULL` guard — so it sat on QUEUED forever, counted in the
+ * Lists page's status chips and dialable by nothing.
+ *
  * @returns {Promise<{cancelled:number, failed:number, ids:number[]}>}
  */
 async function recoverStaleLeads(db, { claimTimeoutSec, ringingTimeoutSec, onCallTimeoutSec }) {
@@ -323,8 +333,8 @@ async function recoverStaleLeads(db, { claimTimeoutSec, ringingTimeoutSec, onCal
             assigned_to       = NULL,
             claimed_at        = NULL
       WHERE call_status = ?
-        AND claimed_at IS NOT NULL
-        AND claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND)`,
+        AND (claimed_at IS NULL
+             OR claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND))`,
     [LEAD_STATUS.NEW, LEAD_STATUS.QUEUED, claimSec],
   );
 
@@ -335,9 +345,12 @@ async function recoverStaleLeads(db, { claimTimeoutSec, ringingTimeoutSec, onCal
     db,
     `SELECT id, call_status, campaign_id, list_id
        FROM csv_data
-      WHERE ( (call_status IN (?, ?) AND claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND))
-              OR (call_status = ? AND claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND)) )
-        AND claimed_at IS NOT NULL
+      WHERE ( (call_status IN (?, ?)
+               AND (claimed_at IS NULL
+                    OR claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND)))
+              OR (call_status = ?
+                  AND (claimed_at IS NULL
+                       OR claimed_at < DATE_SUB(NOW(), INTERVAL ? SECOND))) )
       LIMIT 200`,
     [
       LEAD_STATUS.DIALING,

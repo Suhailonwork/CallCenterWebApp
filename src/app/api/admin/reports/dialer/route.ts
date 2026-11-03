@@ -1,5 +1,6 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { query } from '@/lib/db';
+import { query, queryOne } from '@/lib/db';
+import { tlOwnsCampaign } from '@/lib/groups';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,7 @@ export const dynamic = 'force-dynamic';
  *   type=status   — lead-status distribution across lists
  *
  * `from`/`to` are inclusive dates (YYYY-MM-DD); they default to today.
+ * A Team Lead only sees one of their own groups' campaigns at a time.
  */
 const TYPES = ['campaign', 'agent', 'gateway', 'contact', 'hourly', 'status'] as const;
 type ReportType = (typeof TYPES)[number];
@@ -24,8 +26,11 @@ type ReportType = (typeof TYPES)[number];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function csvCell(v: unknown): string {
-  const s = v === null || v === undefined ? '' : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = v === null || v === undefined ? '' : String(v);
+  // Spreadsheet formula injection: a cell starting with =, @, + or - (other
+  // than a plain signed number, e.g. a +91 phone number) runs as a formula.
+  if (/^[=@\t\r]/.test(s) || /^[+-](?![\d\s().]*$)/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function toCsv(rows: Record<string, unknown>[]): string {
@@ -49,15 +54,30 @@ export async function GET(req: Request) {
   if ((from && !DATE_RE.test(from)) || (to && !DATE_RE.test(to))) {
     return fail('from/to must be YYYY-MM-DD');
   }
-  // Half-open range so the query stays sargable on created_at.
-  const start = from || new Date().toISOString().slice(0, 10);
-  const endExclusive = to || start;
 
   const campaignIdRaw = sp.get('campaignId');
   const campaignId = campaignIdRaw ? Number(campaignIdRaw) : null;
   if (campaignIdRaw && (!Number.isInteger(campaignId) || campaignId! <= 0)) {
     return fail('Invalid campaignId');
   }
+
+  // RBAC: every other TL-facing API is scoped to the TL's groups — so is this.
+  if (u.role === 'tl') {
+    if (!campaignId) return fail('Select one of your campaigns', 403);
+    if (!(await tlOwnsCampaign(u.id, campaignId))) {
+      return fail('Campaign is not in your group', 403);
+    }
+  }
+
+  // "Today" is the database's date — the same clock every CURDATE() filter in
+  // the app uses — not the UTC date, which is still yesterday before 05:30 IST.
+  let start = from;
+  if (!start) {
+    const today = await queryOne<{ d: string }>("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS d");
+    start = today?.d ?? new Date().toISOString().slice(0, 10);
+  }
+  // Half-open range so the query stays sargable on created_at.
+  const endExclusive = to || start;
 
   const range = [start, endExclusive];
   const campFilter = campaignId ? ' AND c.campaign_id = ?' : '';

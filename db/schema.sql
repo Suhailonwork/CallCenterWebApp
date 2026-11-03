@@ -148,7 +148,7 @@ CREATE TABLE campaigns (
   -- ---- pacing (VICIdial-style predictive control) ----
   dial_ratio          DECIMAL(4,2) NOT NULL DEFAULT 1.00
                         COMMENT 'Lines dialled per READY agent (1.00 = progressive, >1 over-dials)',
-  dial_timeout_sec    INT NOT NULL DEFAULT 45
+  dial_timeout_sec    INT NOT NULL DEFAULT 25
                         COMMENT 'Seconds to let the customer leg ring before giving up',
   wrapup_seconds      INT NOT NULL DEFAULT 0
                         COMMENT 'Grace period after a call before the agent is offered another (0 = until saved)',

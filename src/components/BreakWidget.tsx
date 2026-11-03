@@ -57,6 +57,8 @@ export function BreakWidget() {
       toast.success('Break requested');
       setReason('');
       load();
+    } catch {
+      toast.error('Network error — break not requested');
     } finally {
       setBusy(false);
     }
@@ -77,6 +79,8 @@ export function BreakWidget() {
       } else {
         toast.error('Could not end break');
       }
+    } catch {
+      toast.error('Network error — break not ended');
     } finally {
       setBusy(false);
     }

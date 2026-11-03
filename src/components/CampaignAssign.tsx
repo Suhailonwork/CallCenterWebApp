@@ -34,6 +34,8 @@ export function CampaignAssign({
         } else {
           toast.error(data.error ?? 'Failed to load assignments');
         }
+      } catch {
+        toast.error('Failed to load assignments');
       } finally {
         setLoading(false);
       }
@@ -66,6 +68,8 @@ export function CampaignAssign({
       }
       toast.success('Campaign assignment saved');
       onClose();
+    } catch {
+      toast.error('Network error — assignment not saved');
     } finally {
       setSaving(false);
     }

@@ -46,6 +46,8 @@ export function GatewayManager() {
       const data = await res.json();
       if (res.ok) setGateways(data.gateways);
       else toast.error(data.error ?? 'Failed to load gateways');
+    } catch {
+      toast.error('Failed to load gateways', { toastId: 'gateways-load' });
     } finally {
       setLoading(false);
     }
@@ -120,21 +122,29 @@ export function GatewayManager() {
 
   async function remove(gw: GsmGateway) {
     if (!confirm(`Delete gateway "${gw.name}"? This is only allowed if no campaign uses it.`)) return;
-    const res = await fetch(`/api/admin/gateways/${gw.id}`, { method: 'DELETE' });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) { toast.success('Gateway deleted'); refreshWithStatusCatchup(); }
-    else        { toast.error(data.error ?? 'Delete failed'); }
+    try {
+      const res = await fetch(`/api/admin/gateways/${gw.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) { toast.success('Gateway deleted'); refreshWithStatusCatchup(); }
+      else        { toast.error(data.error ?? 'Delete failed'); }
+    } catch {
+      toast.error('Network error — gateway not deleted');
+    }
   }
 
   async function toggleStatus(gw: GsmGateway) {
     const next = gw.status === 'active' ? 'inactive' : 'active';
-    const res  = await fetch(`/api/admin/gateways/${gw.id}`, {
-      method:  'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ status: next }),
-    });
-    if (res.ok) { toast.success(`Gateway marked ${next} — checking status…`); refreshWithStatusCatchup(); }
-    else        { toast.error('Update failed'); }
+    try {
+      const res  = await fetch(`/api/admin/gateways/${gw.id}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ status: next }),
+      });
+      if (res.ok) { toast.success(`Gateway marked ${next} — checking status…`); refreshWithStatusCatchup(); }
+      else        { toast.error('Update failed'); }
+    } catch {
+      toast.error('Network error — gateway not updated');
+    }
   }
 
   return (

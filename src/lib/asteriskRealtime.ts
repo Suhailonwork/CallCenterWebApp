@@ -18,7 +18,6 @@ import { pool } from "./db";
 
 /** Pool ya transaction-connection — dono .execute() rakhte hain.
  *  Isse caller transaction ke andar provision kar sakta hai. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SqlExecutor = { execute: (sql: string, values?: any[]) => Promise<any> };
 
 /** Stable, auto-generated Asterisk endpoint name for a gateway.
@@ -37,10 +36,14 @@ async function reloadAndQualifyGateway(endpoint: string): Promise<void> {
   const auth =
     "Basic " + Buffer.from(`${ariUser}:${ariPass}`).toString("base64");
 
+  // An unreachable Asterisk must not hang the gateway save that called us.
+  const ARI_TIMEOUT_MS = 5000;
+
   // Reload PJSIP so the realtime change is picked up.
   await fetch(`${ariUrl}/ari/asterisk/modules/res_pjsip.so`, {
     method: "PUT",
     headers: { Authorization: auth },
+    signal: AbortSignal.timeout(ARI_TIMEOUT_MS),
   }).catch(() => {});
 
   // Give the reload a moment, then send a qualify (SIP OPTIONS ping).
@@ -50,6 +53,7 @@ async function reloadAndQualifyGateway(endpoint: string): Promise<void> {
     {
       method: "POST",
       headers: { Authorization: auth },
+      signal: AbortSignal.timeout(ARI_TIMEOUT_MS),
     },
   ).catch(() => {});
 }

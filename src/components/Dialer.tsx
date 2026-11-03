@@ -1143,6 +1143,7 @@ import {
 } from "@/lib/dispositionRules";
 import { isEngineDriven, isPredictive } from "@/lib/dialerModes";
 import type { Campaign, Contact, SipConfig, CallDisposition, DialerType } from "@/types";
+import { setCallActive } from "@/components/SessionGuard";
 
 /**
  * Normalize a contact's custom_fields into ordered [label, value] entries.
@@ -1284,6 +1285,8 @@ export function Dialer() {
   contactRef.current = contact;
   const autoRunningRef = useRef(false);
   autoRunningRef.current = autoRunning;
+  const postCallRef = useRef<PostCall | null>(null);
+  postCallRef.current = postCall;
 
   /* ---- the wrap-up's disposition rule ----
    * Resolved from the same catalogue and the same campaign overrides the
@@ -1360,10 +1363,16 @@ export function Dialer() {
 
   useEffect(() => {
     let phone: SipPhone | null = null;
+    // The SIP config arrives asynchronously. If the dialer unmounts first (fast
+    // navigation, or StrictMode's mount/unmount/mount in development) the
+    // cleanup below has already run, and a phone started after it would stay
+    // registered with nothing left to stop it.
+    let cancelled = false;
     (async () => {
       try {
         const res = await fetch("/api/employee/sip");
         const data = await res.json();
+        if (cancelled) return;
         if (!res.ok) {
           toast.error(data.error ?? "Could not load SIP configuration");
           return;
@@ -1385,7 +1394,7 @@ export function Dialer() {
           phoneRef.current = phone;
         }
       } catch {
-        toast.error("Failed to initialise the dialer");
+        if (!cancelled) toast.error("Failed to initialise the dialer");
       }
     })();
 
@@ -1401,13 +1410,21 @@ export function Dialer() {
       finally { setCampaignsLoaded(true); }
     })();
 
-    return () => { phone?.stop(); };
+    return () => {
+      cancelled = true;
+      phone?.stop();
+      if (phoneRef.current === phone) phoneRef.current = null;
+    };
   }, [handleCallState, handleCallEnded]);
 
   useEffect(() => {
     const onCall = callState === "connecting" || callState === "ringing" || callState === "in-call";
     getSocket().emit("set-state", onCall ? "on-call" : "idle");
+    // An expired web session must not reload the page under a live call.
+    setCallActive(onCall);
   }, [callState]);
+
+  useEffect(() => () => setCallActive(false), []);
 
   useEffect(() => {
     if (callState !== "connecting" && callState !== "ringing" && callState !== "in-call") return;
@@ -1489,7 +1506,19 @@ export function Dialer() {
   );
 
   /** Reserve exactly ONE eligible lead. Loading is not calling. */
-  const loadNextLead = useCallback(async (campaignId: number) => {
+  const leadRequestRef = useRef(false);
+  const leadRetryRef = useRef<number | null>(null);
+  const loadNextLead = useCallback(async function load(campaignId: number): Promise<void> {
+    // One reservation request at a time. Skip, a failed verify, the load-one-
+    // lead effect and every other agent's "dialer" broadcast all ask for the
+    // next lead; overlapping requests would each reserve a lead of their own,
+    // leaving the extras parked on this agent until their claim times out.
+    if (leadRequestRef.current) {
+      leadRetryRef.current = campaignId; // asked again meanwhile — answer it after
+      return;
+    }
+    leadRequestRef.current = true;
+    let adopted = false;
     setLeadBusy(true);
     setLeadReason(null);
     try {
@@ -1508,6 +1537,7 @@ export function Dialer() {
       }
       if (data.contact) {
         setContact(data.contact);
+        adopted = true;
       } else {
         setContact(null);
         setLeadReason(
@@ -1521,7 +1551,15 @@ export function Dialer() {
     } catch {
       setLeadReason("Network error while loading a contact");
     } finally {
+      leadRequestRef.current = false;
       setLeadBusy(false);
+      const retry = leadRetryRef.current;
+      leadRetryRef.current = null;
+      // A request that came in while this one was out still gets its answer —
+      // unless this one already put a lead on screen.
+      if (retry !== null && !adopted && retry === campaignRef.current?.id) {
+        void load(retry);
+      }
     }
   }, [releaseLead]);
 
@@ -1576,6 +1614,25 @@ export function Dialer() {
     loadNextLead(campaign.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registered, campaign, contact, postCall, inCall]);
+
+  // Leaving the screen with a lead reserved hands it straight back instead of
+  // parking it on this agent until the claim times out. Never while a call or
+  // its wrap-up is open (the server only ever rolls back a lead still QUEUED).
+  const heldLeadRef = useRef<{ id: number; releasable: boolean } | null>(null);
+  heldLeadRef.current = contact ? { id: contact.id, releasable: !inCall && !postCall } : null;
+  useEffect(
+    () => () => {
+      const held = heldLeadRef.current;
+      if (!held?.releasable) return;
+      fetch("/api/employee/dialer/release", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: held.id, reason: "closed" }),
+        keepalive: true,
+      }).catch(() => {});
+    },
+    [],
+  );
 
   // The server refused to pace for this campaign, or an admin switched its
   // mode while we were signed on. Either way the auto-dialer will not open
@@ -1637,13 +1694,22 @@ export function Dialer() {
 
   useEffect(() => {
     if (!campaign) return;
+    // Switching campaigns quickly must not let the previous campaign's answer
+    // land last and block (or unblock) calls on the new one.
+    let stale = false;
     fetch(`/api/employee/gateway-status?campaignId=${campaign.id}`)
       .then((r) => r.json())
       .then((data) => {
+        if (stale) return;
         setGatewayReachable(data.reachable);
         setGatewayWarning(data.reachable ? null : (data.reason ?? "Gateway offline"));
       })
-      .catch(() => { setGatewayReachable(null); setGatewayWarning(null); });
+      .catch(() => {
+        if (stale) return;
+        setGatewayReachable(null);
+        setGatewayWarning(null);
+      });
+    return () => { stale = true; };
   }, [campaign]);
 
   useEffect(() => {
@@ -1672,7 +1738,24 @@ export function Dialer() {
       setCallState("in-call");
     };
     socket.on("assigned-call", onAssigned);
-    return () => { socket.off("assigned-call", onAssigned); };
+
+    // The server forgets an agent whose socket drops (network blip, server
+    // restart) and re-creates them in PAUSE. Re-announce availability once the
+    // connection is back, or the screen says "Available" while no call is ever
+    // sent. Mid-call or mid-wrap-up, saving the wrap-up re-announces it instead.
+    const onReconnect = () => {
+      if (autoRunningRef.current && !metaRef.current && !postCallRef.current) {
+        socket.emit("agent-available", {
+          extension: sipRef.current?.extension,
+          campaignId: campaignRef.current?.id,
+        });
+      }
+    };
+    socket.io.on("reconnect", onReconnect);
+    return () => {
+      socket.off("assigned-call", onAssigned);
+      socket.io.off("reconnect", onReconnect);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registered, campaign]);
 
@@ -1700,7 +1783,7 @@ export function Dialer() {
   }
 
   async function savePostCall() {
-    if (!postCall) return;
+    if (!postCall || saving) return;
     // The disposition reason is what drives the dialing rules, so it is
     // required in every mode — in predictive and ratio it is also the only
     // thing the call status can be derived from.

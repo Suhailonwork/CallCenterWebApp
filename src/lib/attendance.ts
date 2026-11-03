@@ -630,8 +630,11 @@ export function statusLabel(s: AttendanceStatus | null): string {
 }
 
 function csvCell(v: unknown): string {
-  const s = v == null ? '' : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = v == null ? '' : String(v);
+  // Spreadsheet formula injection: a cell starting with =, @, + or - (other
+  // than a plain signed number) runs as a formula when the export is opened.
+  if (/^[=@\t\r]/.test(s) || /^[+-](?![\d\s().]*$)/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function hms(sec: number): string {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { format, parseISO } from 'date-fns';
+import { toast } from 'react-toastify';
 import { Button } from '@/components/Button';
 import type { EmployeeAttendanceData, AttendanceStatus } from '@/types';
 
@@ -50,14 +51,22 @@ export function EmployeeAttendance() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
 
+  // Paging and the 30s refresh overlap; only the newest request may update.
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const res = await fetch(`/api/employee/attendance?page=${page}`);
       const json = await res.json();
+      if (seq !== loadSeq.current) return;
       if (res.ok) setData(json);
+    } catch {
+      if (seq === loadSeq.current) {
+        toast.error('Could not load your attendance', { toastId: 'my-attendance-load' });
+      }
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [page]);
 

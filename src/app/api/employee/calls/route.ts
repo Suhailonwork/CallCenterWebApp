@@ -42,7 +42,12 @@ const logSchema = z.object({
   tags: z.string().max(255).nullable().optional(),
   /** The reason picked under that code; it is what the dialing rule keys on. */
   dispositionReason: z.string().max(255).nullable().optional(),
-  followUpAt: z.string().max(40).nullable().optional(),
+  /** datetime-local value; anything else would fail the DATETIME insert with a 500. */
+  followUpAt: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/)
+    .nullable()
+    .optional(),
   /** 'agent' keeps the callback for this agent, 'campaign' offers it to anyone. */
   callbackType: z.enum(['agent', 'campaign']).optional(),
 });
@@ -108,6 +113,23 @@ export async function POST(req: Request) {
       row.assigned_to === user.id || (await agentCanAccessCampaign(user.id, row.campaign_id));
     if (!allowed) return fail("You are not assigned to this contact's campaign", 403);
     lead = { id: row.id, campaign_id: row.campaign_id, list_id: row.list_id };
+  }
+
+  // A retried save (double submit, or a response lost on the network after the
+  // server had already committed) must not log the call twice: no second note,
+  // no double-counted performance row, no duplicate callback.
+  if (d.callId != null) {
+    const saved = await queryOne<{ id: number }>(
+      `SELECT c.id FROM calls c
+         JOIN call_notes n ON n.call_id = c.id AND n.employee_id = ?
+        WHERE c.id = ? AND c.disposition IS NOT NULL
+        LIMIT 1`,
+      [user.id, d.callId],
+    );
+    if (saved) {
+      agentWrapupDone(user.id);
+      return ok({ callId: saved.id, duplicate: true });
+    }
   }
 
   // ---- the disposition rule: what this wrap-up means for the lead ----

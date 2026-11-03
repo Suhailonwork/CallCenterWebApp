@@ -407,11 +407,47 @@ if (stranded.affectedRows > 0) {
 }
 
 // 7d. Release any claim left behind by an older process.
+//
+// An in-flight lead is rolled off its transient status at the same time. A
+// status of QUEUED / DIALING / RINGING / CONNECTED is only ever written
+// together with claimed_at, so dropping the claim alone used to strand the
+// lead: the claim query refuses in-flight statuses, the recovery sweep looked
+// only at rows that still had a claim, and a list RESET skipped them too — the
+// lead sat on QUEUED forever, visible in the Lists status chips and dialable
+// by nothing.
 const [rel] = await conn.query(
-  `UPDATE csv_data SET claimed_at = NULL, assigned_to = NULL
+  `UPDATE csv_data
+      SET status_changed_at = IF(call_status IN ('QUEUED','DIALING','RINGING','CONNECTED'),
+                                 NOW(), status_changed_at),
+          call_status = CASE
+            WHEN call_status = 'QUEUED'    THEN COALESCE(pre_dial_status, 'NEW')
+            WHEN call_status = 'CONNECTED' THEN 'CANCELLED'
+            WHEN call_status IN ('DIALING','RINGING') THEN 'FAILED'
+            ELSE call_status END,
+          pre_dial_status = NULL,
+          claimed_at = NULL,
+          assigned_to = NULL
     WHERE claimed_at IS NOT NULL AND claimed_at < DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
 );
 if (rel.affectedRows > 0) console.log(`OK  ${rel.affectedRows} stale claims released`);
+
+// 7d-bis. Repair leads an EARLIER run of 7d already stranded: an in-flight
+// status with no claim at all. Same rollback, matched on the giveaway state.
+const [unstick] = await conn.query(
+  `UPDATE csv_data
+      SET status_changed_at = NOW(),
+          call_status = CASE
+            WHEN call_status = 'QUEUED'    THEN COALESCE(pre_dial_status, 'NEW')
+            WHEN call_status = 'CONNECTED' THEN 'CANCELLED'
+            ELSE 'FAILED' END,
+          pre_dial_status = NULL,
+          assigned_to = NULL
+    WHERE claimed_at IS NULL
+      AND call_status IN ('QUEUED','DIALING','RINGING','CONNECTED')`,
+);
+if (unstick.affectedRows > 0) {
+  console.log(`OK  ${unstick.affectedRows} leads stranded on an in-flight status unstuck`);
+}
 
 // 7e. Existing call rows describe finished calls — backfill the new columns
 // from what is already known so reports are complete from day one.

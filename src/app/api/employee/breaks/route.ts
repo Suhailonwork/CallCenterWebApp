@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { authenticate, isError, ok, fail } from '@/lib/api';
-import { query, queryOne } from '@/lib/db';
+import { query } from '@/lib/db';
 import { employeeBreaks } from '@/lib/breaks';
 import { broadcastChange } from '@/lib/realtime';
 
@@ -26,16 +26,18 @@ export async function POST(req: Request) {
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return fail('Invalid break request');
 
-  const existing = await queryOne(
-    "SELECT id FROM breaks WHERE employee_id = ? AND status IN ('requested','active')",
-    [u.id],
-  );
-  if (existing) return fail('You already have a pending or active break');
+  // Check and insert in one statement, so two quick submissions cannot both
+  // pass the "no pending break" check and create duplicate requests.
+  const res = (await query(
+    `INSERT INTO breaks (employee_id, break_type, reason, status)
+     SELECT ?, ?, ?, 'requested' FROM DUAL
+      WHERE NOT EXISTS (
+        SELECT 1 FROM breaks WHERE employee_id = ? AND status IN ('requested','active')
+      )`,
+    [u.id, parsed.data.breakType, parsed.data.reason ?? null, u.id],
+  )) as unknown as { affectedRows?: number };
+  if (!res.affectedRows) return fail('You already have a pending or active break');
 
-  await query(
-    "INSERT INTO breaks (employee_id, break_type, reason, status) VALUES (?,?,?,'requested')",
-    [u.id, parsed.data.breakType, parsed.data.reason ?? null],
-  );
   broadcastChange('breaks');
   return ok({ ok: true }, 201);
 }

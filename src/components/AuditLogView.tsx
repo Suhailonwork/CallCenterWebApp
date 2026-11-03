@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { format, parseISO } from 'date-fns';
+import { toast } from 'react-toastify';
 import { Button } from '@/components/Button';
 import type { AuditRow } from '@/types';
 
@@ -41,7 +42,11 @@ export function AuditLogView() {
   // The text actually applied to the query (separate from the input box).
   const [appliedQ, setAppliedQ] = useState('');
 
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    // Filters and paging change faster than the server answers; only the
+    // newest request may fill the table.
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), pageSize: '50' });
@@ -49,9 +54,13 @@ export function AuditLogView() {
       if (appliedQ) params.set('q', appliedQ);
       const res = await fetch(`/api/admin/audit?${params.toString()}`);
       const json = await res.json();
+      if (seq !== loadSeq.current) return;
       if (res.ok) setData(json);
+      else toast.error(json.error ?? 'Failed to load the audit log');
+    } catch {
+      if (seq === loadSeq.current) toast.error('Failed to load the audit log');
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [page, action, appliedQ]);
 

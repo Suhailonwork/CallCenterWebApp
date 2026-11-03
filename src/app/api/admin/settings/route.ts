@@ -19,6 +19,9 @@ const KNOWN_KEYS = [
   'dialer_oncall_timeout_sec',
 ];
 
+const TIME_KEYS = new Set(['work_start', 'work_end']);
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+
 /** GET /api/admin/settings - all system settings. */
 export async function GET() {
   const u = await authenticate(['admin']);
@@ -36,9 +39,19 @@ export async function PUT(req: Request) {
 
   const updates: Record<string, string> = {};
   for (const key of KNOWN_KEYS) {
-    if (body[key] !== undefined && body[key] !== null) {
-      updates[key] = String(body[key]).slice(0, 255);
+    if (body[key] === undefined || body[key] === null) continue;
+    const value = String(body[key]).trim().slice(0, 255);
+    // A cleared box means "leave it as it is". Storing '' would silently turn
+    // a dialer tunable into 0, because the engine reads a blank as zero.
+    if (value === '') continue;
+    const label = key.replace(/_/g, ' ');
+    if (TIME_KEYS.has(key)) {
+      if (!TIME_RE.test(value)) return fail(`${label} must be a time (HH:MM)`);
+    } else {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0) return fail(`${label} must be a number of 0 or more`);
     }
+    updates[key] = value;
   }
   if (Object.keys(updates).length === 0) return fail('No valid settings provided');
 

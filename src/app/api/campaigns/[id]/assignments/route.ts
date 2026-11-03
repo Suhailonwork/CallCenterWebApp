@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { authenticate, isError, ok, fail, type AuthedUser } from "@/lib/api";
-import { query } from "@/lib/db";
+import { query, queryOne } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { employeesUnderManager } from "@/lib/org";
 import { agentsInTLGroups, tlOwnsCampaign } from "@/lib/groups";
@@ -68,6 +68,12 @@ export async function PUT(
 
   const parsed = putSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return fail("Invalid assignment data");
+
+  // A deleted campaign would otherwise wipe the agents' current assignments
+  // below and then fail the insert on the foreign key.
+  if (!(await queryOne("SELECT id FROM campaigns WHERE id = ?", [id]))) {
+    return fail("Campaign not found", 404);
+  }
 
   // A caller may only change assignments for agents they are allowed to manage.
   const allowed = (await assignableEmployees(u)).map((e) => e.id);

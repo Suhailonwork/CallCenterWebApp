@@ -4,8 +4,11 @@ import { query } from '@/lib/db';
 export const runtime = 'nodejs';
 
 function csvCell(v: unknown): string {
-  const s = v == null ? '' : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = v == null ? '' : String(v);
+  // Spreadsheet formula injection: a cell starting with =, @, + or - (other
+  // than a plain signed number, e.g. a +91 phone number) runs as a formula.
+  if (/^[=@\t\r]/.test(s) || /^[+-](?![\d\s().]*$)/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /**

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'react-toastify';
 import { useEscapeKey } from '@/lib/useEscapeKey';
 import type { AdminUser, TeamSummary, Role, Shift } from '@/types';
@@ -48,6 +48,8 @@ export function UserManager() {
         const sd = await shiftRes.json();
         setShifts(sd.shifts ?? []);
       }
+    } catch {
+      toast.error('Failed to load users');
     } finally {
       setLoading(false);
     }
@@ -130,21 +132,31 @@ export function UserManager() {
     }
   }
 
+  // One status change per user at a time — a double click must not send two.
+  const toggling = useRef(new Set<number>());
   async function toggleActive(u: AdminUser) {
-    const res = u.is_active
-      ? await fetch(`/api/admin/users/${u.id}`, { method: 'DELETE' })
-      : await fetch(`/api/admin/users/${u.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ isActive: true }),
-        });
-    const data = await res.json();
-    if (!res.ok) {
-      toast.error(data.error ?? 'Update failed');
-      return;
+    if (toggling.current.has(u.id)) return;
+    toggling.current.add(u.id);
+    try {
+      const res = u.is_active
+        ? await fetch(`/api/admin/users/${u.id}`, { method: 'DELETE' })
+        : await fetch(`/api/admin/users/${u.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ isActive: true }),
+          });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error ?? 'Update failed');
+        return;
+      }
+      toast.success(u.is_active ? 'User deactivated' : 'User activated');
+      load();
+    } catch {
+      toast.error('Network error — user not updated');
+    } finally {
+      toggling.current.delete(u.id);
     }
-    toast.success(u.is_active ? 'User deactivated' : 'User activated');
-    load();
   }
 
   const needsTeam = role === 'employee' || role === 'tl';

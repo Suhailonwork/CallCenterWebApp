@@ -13,6 +13,7 @@ import {
   disallowedPacingFields,
   modeOwnsPacingField,
 } from '@/lib/dialerModes';
+import { normalizeStatus } from '@/lib/leadStatus';
 
 /** Up to 200 field names, trimmed & non-empty, ≤120 chars each (defaults + custom). */
 export const fieldsSchema = z.array(z.string().trim().min(1).max(120)).max(200);
@@ -287,6 +288,17 @@ export function parseDupMode(raw: unknown): DupMode {
 
 export const dialStatusesSchema = z.array(z.string().trim().min(1).max(32)).max(20);
 
+/**
+ * Recycle rules, one per status.
+ *
+ * The duplicate check is the point: parseRecycleRules() keeps the FIRST rule
+ * for a status and drops the rest, so a second rule for the same status is not
+ * a second chance at that lead — it is a setting that silently does nothing.
+ * Rejecting it here means the editor hears about it instead of saving a
+ * campaign that does not dial the way its screen says it does. Statuses are
+ * compared the way the engine compares them (alias-folded, case-insensitive),
+ * so "NA" and "no_answer" collide exactly as they would at dial time.
+ */
 export const recycleRulesSchema = z
   .array(
     z.object({
@@ -295,7 +307,25 @@ export const recycleRulesSchema = z
       max_attempts: z.number().int().min(1).max(50),
     }),
   )
-  .max(20);
+  .max(20)
+  .superRefine((rules, ctx) => {
+    const seen = new Map<string, number>();
+    rules.forEach((r, i) => {
+      const status = normalizeStatus(r.status);
+      const first = seen.get(status);
+      if (first === undefined) {
+        seen.set(status, i);
+        return;
+      }
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [i, 'status'],
+        message:
+          `Duplicate recycle rule for ${status} — rule ${first + 1} already covers it. ` +
+          `One rule per status; raise its delay or tries instead.`,
+      });
+    });
+  });
 
 /**
  * Per-campaign overrides of the disposition dialing rules, keyed by code.

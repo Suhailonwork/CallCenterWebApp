@@ -4,6 +4,9 @@ import { gwEndpoint } from '@/lib/asteriskRealtime';
 
 export const runtime = 'nodejs';
 
+/** An unreachable Asterisk must not hang the campaign console. */
+const ARI_TIMEOUT_MS = 4000;
+
 /**
  * GET /api/admin/gateways/status
  * Returns reachability status for all gateways by querying Asterisk ARI.
@@ -33,6 +36,7 @@ export async function GET() {
             headers: {
               Authorization: 'Basic ' + Buffer.from(`${ariUser}:${ariPass}`).toString('base64'),
             },
+            signal: AbortSignal.timeout(ARI_TIMEOUT_MS),
           },
         );
         if (!res.ok) {

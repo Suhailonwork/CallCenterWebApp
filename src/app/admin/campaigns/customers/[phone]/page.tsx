@@ -127,8 +127,8 @@ export default function CustomerDetailPage() {
                   <td className="px-3 py-2">
                     {c.recording_url ? (
                       <div className="flex items-center gap-2">
-                        <audio controls src={c.recording_url} className="h-8" />
-                        <a href={c.recording_url} download
+                        <audio controls src={`/api/recordings/${encodeURIComponent(c.recording_url)}`} className="h-8" />
+                        <a href={`/api/recordings/${encodeURIComponent(c.recording_url)}`} download
                           className="text-xs text-indigo-600 hover:underline whitespace-nowrap">
                           Download
                         </a>

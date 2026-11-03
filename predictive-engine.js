@@ -486,7 +486,7 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
             leadId: lead.id,
             phone: lead.phone_number,
             gatewayEndpoint: gw.endpoint,
-            timeoutSec: Number(campaign.dial_timeout_sec) || 45,
+            timeoutSec: Number(campaign.dial_timeout_sec) || 25,
             recordingEnabled: Number(campaign.recording_enabled) === 1,
             amdContext: cfg.amdEnabled ? cfg.amdContext : null,
           });
@@ -959,13 +959,25 @@ module.exports = function startPredictiveEngine({ io, registry, ari }) {
 
   /* ---------------- pacing ---------------- */
 
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+  /**
+   * Seconds since midnight on the business clock (IST — the zone the DB pools
+   * and the attendance module use), whatever timezone the server OS is set to.
+   * Reading the OS clock would shift every calling window by 5h30m on a UTC
+   * host and dial customers in the middle of the night.
+   */
+  function istSecondsOfDay() {
+    const d = new Date(Date.now() + IST_OFFSET_MS);
+    return d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+  }
+
   /** Is the campaign inside its allowed calling window? */
   function insideCallingWindow(campaign) {
     const start = campaign.calling_start;
     const end = campaign.calling_end;
     if (!start || !end) return true;
-    const d = new Date();
-    const nowSec = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+    const nowSec = istSecondsOfDay();
     const toSec = (t) => {
       const [h, m, s] = String(t).split(":").map(Number);
       return (h || 0) * 3600 + (m || 0) * 60 + (s || 0);

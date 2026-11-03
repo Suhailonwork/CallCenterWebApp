@@ -110,8 +110,19 @@ export async function POST(req: Request) {
     // sipPassword is returned once so an admin can hand it to the agent if needed;
     // the agent's browser also fetches it automatically via GET /api/employee/sip.
     return ok({ id: newId, extension, sipPassword }, 201);
-  } catch (e) {
+  } catch (e: any) {
     await conn.rollback();
+    // Two requests for the same email can both pass the check above; the
+    // unique key is the real guard.
+    if (e?.code === 'ER_DUP_ENTRY') {
+      return fail(
+        /email/i.test(String(e?.sqlMessage ?? ''))
+          ? 'A user with that email already exists'
+          : 'Another user was created at the same moment — please try again',
+        409,
+      );
+    }
+    if (e?.code === 'ER_NO_REFERENCED_ROW_2') return fail('Selected shift or team not found');
     console.error('[admin/users] create failed:', e);
     return fail('Failed to create user', 500);
   } finally {

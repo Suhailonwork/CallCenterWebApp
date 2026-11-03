@@ -13,9 +13,13 @@ export interface SessionPayload {
 }
 
 function secret(): Uint8Array {
-  return new TextEncoder().encode(
-    process.env.JWT_SECRET ?? 'dev-insecure-secret-change-me',
-  );
+  const value = process.env.JWT_SECRET;
+  if (!value && process.env.NODE_ENV === 'production') {
+    // The development fallback is public; signing or accepting tokens with it
+    // in production would make every session forgeable. Fail closed instead.
+    throw new Error('JWT_SECRET is not set');
+  }
+  return new TextEncoder().encode(value ?? 'dev-insecure-secret-change-me');
 }
 
 export async function signToken(p: SessionPayload): Promise<string> {

@@ -17,6 +17,7 @@ import { jwtVerify } from "jose";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
+const mysql = require("mysql2/promise");
 const startAri = require("./ari-app.js");
 const startPredictiveEngine = require("./predictive-engine.js");
 const { createAgentRegistry, AGENT_STATE } = require("./src/lib/agentRegistry.js");
@@ -41,15 +42,29 @@ function loadEnv() {
 }
 loadEnv();
 
+// A stray rejected promise in the ARI / dialer code must not take the whole
+// call center (web app + dialer) down with it — log it and keep serving.
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] unhandled promise rejection:", reason);
+});
+
 const dev = !process.argv.includes("prod");
 // NODE_ENV must follow the mode Next actually runs in. A NODE_ENV=production
 // copied in from .env makes Next's dev CSS loader emit raw CSS, which fails
 // with "Module parse failed" whenever a stylesheet is recompiled.
 process.env.NODE_ENV = dev ? "development" : "production";
 const port = Number(process.env.PORT || 3000);
+if (!dev && !process.env.JWT_SECRET) {
+  // The fallback key below is public — every session would be forgeable.
+  console.error("> JWT_SECRET is not set. Refusing to start in production.");
+  process.exit(1);
+}
 const secret = new TextEncoder().encode(
   process.env.JWT_SECRET ?? "dev-insecure-secret-change-me",
 );
+
+/** Sockets of admins / managers / TLs — the consoles that show live agents. */
+const STAFF_ROOM = "staff";
 
 /** Identify the user behind a socket from its session cookie. */
 async function userFromCookie(cookieHeader) {
@@ -72,6 +87,52 @@ async function userFromCookie(cookieHeader) {
   }
 }
 
+/** Small pool for the socket layer's own authorization lookups. */
+let seatDb = null;
+function seatPool() {
+  if (!seatDb) {
+    seatDb = mysql.createPool({
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT || 3306),
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 2,
+      timezone: "+05:30",
+    });
+  }
+  return seatDb;
+}
+
+/**
+ * The agent's own SIP extension, and whether the campaign they named belongs
+ * to one of their groups. Both come from the database, never from the socket
+ * message, so a hand-crafted event can neither join another group's campaign
+ * nor route customers to somebody else's phone.
+ *
+ * @returns {Promise<{extension: string|null, allowed: boolean} | null>}
+ */
+async function seatFor(userId, campaignId) {
+  const [rows] = await seatPool().query(
+    `SELECT e.sip_extension AS extension,
+            EXISTS(SELECT 1
+                     FROM campaigns c
+                     JOIN group_agents ga
+                       ON ga.group_id = c.group_id AND ga.agent_id = e.user_id
+                    WHERE c.id = ?) AS allowed
+       FROM employees e
+      WHERE e.user_id = ?`,
+    [Number(campaignId) || 0, userId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    extension: row.extension ? String(row.extension) : null,
+    allowed: Number(row.allowed) === 1,
+  };
+}
+
 const app = next({ dev });
 const handle = app.getRequestHandler();
 
@@ -89,25 +150,61 @@ app.prepare().then(() => {
   globalThis.__ccio = io;
 
   const log = createDialerLog(null, { tag: "AGENTS", toDb: false });
-  const registry = createAgentRegistry({ io, log });
+  // Agent presence goes to the staff consoles only — agents' own browsers
+  // never render it, and broadcasting every state change to every agent grows
+  // with the square of the floor size.
+  const registry = createAgentRegistry({
+    io: { emit: (event, payload) => io.to(STAFF_ROOM).emit(event, payload) },
+    log,
+  });
 
   /**
    * May this agent enter the pacing pool for the campaign they named?
    *
    * READY is a promise the server makes to itself — "open lines for this
    * seat" — so it is only legal on a mode the server dials for (predictive
-   * or ratio). Manual and inbound agents are parked in PAUSE and told why,
-   * which keeps a hand-crafted socket message from turning a manual campaign
-   * into a dialable one. Every path that can reach READY goes through here.
+   * or ratio), and only on a campaign of one of the agent's own groups.
+   * Manual and inbound agents are parked in PAUSE and told why, which keeps a
+   * hand-crafted socket message from turning a manual campaign into a
+   * dialable one. Every path that can reach READY goes through here.
+   *
+   * @returns {Promise<{extension: string} | null>} the seat to mark READY
    */
   async function allowReady(socket, user, info) {
     const campaignId = info && info.campaignId;
+
+    let seat = null;
+    try {
+      seat = await seatFor(user.id, campaignId);
+    } catch (e) {
+      log.error("seat lookup failed", e, { agent: user.id, campaign: campaignId });
+      registry.setState(user.id, AGENT_STATE.PAUSE, { reason: "seat-lookup-failed" });
+      socket.emit("dialer-mode-changed", {
+        campaignId,
+        dialerType: null,
+        reason: "Could not verify your campaign right now — please try again.",
+      });
+      return null;
+    }
+    if (!seat || !seat.allowed || !seat.extension) {
+      registry.setState(user.id, AGENT_STATE.PAUSE, { reason: "campaign-not-assigned" });
+      socket.emit("dialer-mode-changed", {
+        campaignId,
+        dialerType: null,
+        reason: !seat || !seat.extension
+          ? "No SIP extension is configured for your account."
+          : "You are not assigned to that campaign.",
+      });
+      log.info("ready refused", { agent: user.id, campaign: campaignId, reason: "not-assigned" });
+      return null;
+    }
+
     const engineDriven = await engine.campaignIsEngineDriven(campaignId).catch(() => false);
-    if (engineDriven) return true;
+    if (engineDriven) return { extension: seat.extension };
 
     const mode = await engine.campaignMode(campaignId).catch(() => null);
     registry.setState(user.id, AGENT_STATE.PAUSE, {
-      extension: info && info.extension,
+      extension: seat.extension,
       campaignId,
       reason: "mode-not-engine-driven",
     });
@@ -121,18 +218,30 @@ app.prepare().then(() => {
             `auto-dialer does not open lines for them.`,
     });
     log.info("ready refused", { agent: user.id, campaign: campaignId, mode });
-    return false;
+    return null;
   }
 
-  io.on("connection", async (socket) => {
+  // Authenticate the handshake BEFORE the connection handler runs, so every
+  // listener below is attached synchronously and nothing a client sends the
+  // instant it (re)connects can arrive before them. Anonymous sockets are
+  // refused: every event on this bus is for signed-in users.
+  io.use(async (socket, nextMiddleware) => {
     const user = await userFromCookie(socket.handshake.headers.cookie);
+    if (!user) return nextMiddleware(new Error("unauthorized"));
     socket.data.user = user;
+    nextMiddleware();
+  });
 
-    if (user && user.role === "employee") {
+  io.on("connection", (socket) => {
+    const user = socket.data.user;
+
+    if (user.role === "employee") {
       registry.connect(user);
       socket.join("agent:" + user.id); // targeted screen pops
+    } else {
+      socket.join(STAFF_ROOM);
+      socket.emit("agents-updated", registry.snapshot());
     }
-    socket.emit("agents-updated", registry.snapshot());
 
     /**
      * Legacy state report from the existing Dialer component.
@@ -157,9 +266,10 @@ app.prepare().then(() => {
     socket.on("agent-available", async (info) => {
       const u = socket.data.user;
       if (!u || u.role !== "employee") return;
-      if (!(await allowReady(socket, u, info))) return;
+      const seat = await allowReady(socket, u, info);
+      if (!seat) return;
       registry.setState(u.id, AGENT_STATE.READY, {
-        extension: info && info.extension,
+        extension: seat.extension,
         campaignId: info && info.campaignId,
         reason: "agent-available",
       });
@@ -180,13 +290,21 @@ app.prepare().then(() => {
       if (!u || u.role !== "employee") return;
       const next = payload && String(payload.state || "").toUpperCase();
       if (!next || !AGENT_STATE[next]) return;
-      // Same gate as agent-available: this is the other way into READY.
-      if (next === AGENT_STATE.READY && !(await allowReady(socket, u, payload))) return;
-      registry.setState(u.id, next, {
-        extension: payload.extension,
-        campaignId: payload.campaignId,
-        reason: payload.reason || "client",
-      });
+      if (next === AGENT_STATE.READY) {
+        // Same gate as agent-available: this is the other way into READY.
+        const seat = await allowReady(socket, u, payload);
+        if (!seat) return;
+        registry.setState(u.id, next, {
+          extension: seat.extension,
+          campaignId: payload.campaignId,
+          reason: payload.reason || "client",
+        });
+        return;
+      }
+      // Any other state keeps the seat and campaign the server already
+      // verified — they are never taken from the client, or a later
+      // wrap-up-saved -> READY transition would inherit them unchecked.
+      registry.setState(u.id, next, { reason: payload.reason || "client" });
     });
 
     socket.on("disconnect", () => {
@@ -249,5 +367,5 @@ app.prepare().then(() => {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  
+
 });

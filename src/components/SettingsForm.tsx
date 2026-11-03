@@ -34,6 +34,8 @@ export function SettingsForm() {
         const data = await res.json();
         if (res.ok) setValues(data.settings ?? {});
         else toast.error(data.error ?? 'Failed to load settings');
+      } catch {
+        toast.error('Failed to load settings');
       } finally {
         setLoading(false);
       }
@@ -54,6 +56,8 @@ export function SettingsForm() {
         return;
       }
       toast.success('Settings saved');
+    } catch {
+      toast.error('Network error — settings not saved');
     } finally {
       setSaving(false);
     }

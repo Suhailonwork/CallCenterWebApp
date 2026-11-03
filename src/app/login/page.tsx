@@ -27,7 +27,9 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
+      // A server error page is not JSON — report it as a failed login rather
+      // than as "the server is not running".
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         toast.error(data.error ?? 'Login failed');
         return;
@@ -81,7 +83,7 @@ export default function LoginPage() {
           </Button>
         </form>
 
-        <div className="mt-6 rounded-lg bg-slate-50 p-3">
+        {/* <div className="mt-6 rounded-lg bg-slate-50 p-3">
           <p className="mb-2 text-xs font-semibold text-slate-500">
             Demo accounts — password: Password123!
           </p>
@@ -100,7 +102,7 @@ export default function LoginPage() {
               </button>
             ))}
           </div>
-        </div>
+        </div> */}
       </div>
     </div>
   );

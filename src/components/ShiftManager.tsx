@@ -36,6 +36,8 @@ export function ShiftManager({ onClose }: { onClose?: () => void }) {
       const data = await res.json();
       if (res.ok) setShifts(data.shifts ?? []);
       else toast.error(data.error ?? 'Failed to load shifts');
+    } catch {
+      toast.error('Failed to load shifts');
     } finally {
       setLoading(false);
     }
@@ -100,26 +102,32 @@ export function ShiftManager({ onClose }: { onClose?: () => void }) {
       toast.success(editing ? 'Shift updated' : 'Shift created');
       setModal(null);
       load();
+    } catch {
+      toast.error('Network error — shift not saved');
     } finally {
       setSaving(false);
     }
   }
 
   async function toggleActive(s: Shift) {
-    const res = s.is_active
-      ? await fetch(`/api/admin/shifts/${s.id}`, { method: 'DELETE' })
-      : await fetch(`/api/admin/shifts/${s.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ is_active: true }),
-        });
-    const data = await res.json();
-    if (!res.ok) {
-      toast.error(data.error ?? 'Update failed');
-      return;
+    try {
+      const res = s.is_active
+        ? await fetch(`/api/admin/shifts/${s.id}`, { method: 'DELETE' })
+        : await fetch(`/api/admin/shifts/${s.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_active: true }),
+          });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error ?? 'Update failed');
+        return;
+      }
+      toast.success(s.is_active ? 'Shift deactivated' : 'Shift activated');
+      load();
+    } catch {
+      toast.error('Network error — shift not updated');
     }
-    toast.success(s.is_active ? 'Shift deactivated' : 'Shift activated');
-    load();
   }
 
   return (

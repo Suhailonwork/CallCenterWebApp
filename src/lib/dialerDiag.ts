@@ -23,7 +23,14 @@ export interface DialerBlocker {
   count: number;
   detail: string;
   /** What the operator should do about it. */
-  action: 'reset' | 'add-recycle-rule' | 'raise-cap' | 'tick-status' | 'wait' | 'none';
+  action:
+    | 'reset'
+    | 'add-recycle-rule'
+    | 'raise-cap'
+    | 'tick-status'
+    | 'wait'
+    | 'recover-stranded'
+    | 'none';
 }
 
 export interface DialableReport {
@@ -220,26 +227,36 @@ export async function dialableReport(
     `SELECT
        COUNT(*) AS total,
        COALESCE(SUM(claimed_at IS NOT NULL AND call_status IN (${inFlight})), 0) AS in_flight,
+       COALESCE(SUM(claimed_at IS NULL AND call_status IN (${inFlight})), 0)      AS stranded,
        COALESCE(SUM(call_status IN (${terminal})), 0)                            AS terminal,
        COALESCE(SUM(? > 0 AND call_count >= ?), 0)                               AS cap_reached,
        COALESCE(SUM(next_retry_at IS NOT NULL AND next_retry_at > NOW()), 0)     AS waiting_retry,
        COALESCE(SUM(called = 1 AND call_status NOT IN (${ruleList})
-                    AND call_status NOT IN (${terminal})), 0)                    AS called_no_rule,
+                    AND call_status NOT IN (${terminal})
+                    AND call_status NOT IN (${inFlight})), 0)                    AS called_no_rule,
        COALESCE(SUM(called = 1 AND call_status IN (${ruleList})), 0)             AS called_with_rule,
        COALESCE(SUM(called = 0 AND call_status NOT IN (${dialList})
+                    AND call_status NOT IN (${inFlight})
                     AND call_status <> 'CALLBACK'), 0)                           AS fresh_not_ticked,
        COALESCE(SUM(last_disposition IN (${blockedList})), 0)                    AS closed_by_dispo
        FROM csv_data
       WHERE campaign_id = ? AND list_id IN (${ph})`,
+    // Params bind positionally, so this list has to mirror the SELECT above
+    // column by column: in_flight, stranded, terminal, cap_reached (×2),
+    // called_no_rule (rules, terminal, in-flight), called_with_rule,
+    // fresh_not_ticked (dial statuses, in-flight), closed_by_dispo, WHERE.
     [
+      ...IN_FLIGHT_STATUSES,
       ...IN_FLIGHT_STATUSES,
       ...TERMINAL_STATUSES,
       maxAttempts,
       maxAttempts,
       ...recycleStatuses,
       ...TERMINAL_STATUSES,
+      ...IN_FLIGHT_STATUSES,
       ...recycleStatuses,
       ...dialStatuses,
+      ...IN_FLIGHT_STATUSES,
       ...blockedCodes,
       campaignId,
       ...listIds,
@@ -250,6 +267,21 @@ export async function dialableReport(
   const n = (k: string) => Number(buckets?.[k] ?? 0);
 
   if (dialable === 0 && totalLeads > 0) {
+    // First, because it is the one bucket the operator cannot reason about from
+    // the rules on screen. An in-flight status with no claim is not a live call
+    // — every transition into one writes claimed_at in the same statement — so
+    // these are crash leftovers that no dial status and no recycle rule reach.
+    if (n('stranded') > 0) {
+      blockers.push({
+        reason: 'Stranded mid-call by a crash',
+        count: n('stranded'),
+        detail:
+          `These rest on QUEUED / DIALING / RINGING with no live call behind them. ` +
+          `The dialer's recovery sweep clears them within a couple of minutes once ` +
+          `the engine is running; a list RESET clears them immediately.`,
+        action: 'recover-stranded',
+      });
+    }
     if (n('called_no_rule') > 0) {
       blockers.push({
         reason: 'Already called, and their status has no recycle rule',

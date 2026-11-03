@@ -64,26 +64,28 @@ export function ManagerDashboard({ tls, employees, stats, pendingBreaks }: Props
         {tlRows.length === 0 ? (
           <p className="text-sm text-slate-400">No team leads assigned.</p>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-slate-400">
-                <th className="pb-2">Team Lead</th>
-                <th className="pb-2 text-right">Employees</th>
-                <th className="pb-2 text-right">Calls</th>
-                <th className="pb-2 text-right">Success</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tlRows.map((t) => (
-                <tr key={t.id} className="border-b border-slate-100 last:border-0">
-                  <td className="py-2 font-medium">{t.name}</td>
-                  <td className="py-2 text-right">{t.employees}</td>
-                  <td className="py-2 text-right">{t.calls}</td>
-                  <td className="py-2 text-right">{t.successRate}%</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-slate-400">
+                  <th className="pb-2">Team Lead</th>
+                  <th className="pb-2 text-right">Employees</th>
+                  <th className="pb-2 text-right">Calls</th>
+                  <th className="pb-2 text-right">Success</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {tlRows.map((t) => (
+                  <tr key={t.id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-2 font-medium">{t.name}</td>
+                    <td className="py-2 text-right">{t.employees}</td>
+                    <td className="py-2 text-right">{t.calls}</td>
+                    <td className="py-2 text-right">{t.successRate}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
@@ -94,28 +96,30 @@ export function ManagerDashboard({ tls, employees, stats, pendingBreaks }: Props
         {sorted.length === 0 ? (
           <p className="text-sm text-slate-400">No employees assigned.</p>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-slate-400">
-                <th className="pb-2">Employee</th>
-                <th className="pb-2 text-right">Calls</th>
-                <th className="pb-2 text-right">Connected</th>
-                <th className="pb-2 text-right">Success</th>
-                <th className="pb-2 text-right">Talk time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((s) => (
-                <tr key={s.id} className="border-b border-slate-100 last:border-0">
-                  <td className="py-2 font-medium">{s.name}</td>
-                  <td className="py-2 text-right">{s.calls}</td>
-                  <td className="py-2 text-right">{s.connected}</td>
-                  <td className="py-2 text-right">{s.successRate}%</td>
-                  <td className="py-2 text-right">{talk(s.talkSeconds)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-slate-400">
+                  <th className="pb-2">Employee</th>
+                  <th className="pb-2 text-right">Calls</th>
+                  <th className="pb-2 text-right">Connected</th>
+                  <th className="pb-2 text-right">Success</th>
+                  <th className="pb-2 text-right">Talk time</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sorted.map((s) => (
+                  <tr key={s.id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-2 font-medium">{s.name}</td>
+                    <td className="py-2 text-right">{s.calls}</td>
+                    <td className="py-2 text-right">{s.connected}</td>
+                    <td className="py-2 text-right">{s.successRate}%</td>
+                    <td className="py-2 text-right">{talk(s.talkSeconds)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

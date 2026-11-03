@@ -1,5 +1,6 @@
 import { authenticate, isError, ok, fail } from '@/lib/api';
 import { query, queryOne } from '@/lib/db';
+import { tlOwnsCampaign } from '@/lib/groups';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,6 +41,11 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     [leadId],
   );
   if (!lead) return fail('Contact not found', 404);
+
+  // RBAC: a TL may only open leads of campaigns inside their own groups.
+  if (u.role === 'tl' && !(await tlOwnsCampaign(u.id, Number(lead.campaign_id)))) {
+    return fail('Campaign is not in your group', 403);
+  }
 
   const [calls, events] = await Promise.all([
     query<any>(

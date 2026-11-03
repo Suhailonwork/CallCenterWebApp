@@ -1,12 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'react-toastify';
 import { format, parseISO } from 'date-fns';
 import type { CallReportRow } from '@/types';
 
+/** The viewer's own calendar date. toISOString() is UTC — still yesterday in
+ *  India until 05:30, which left today's calls out of the default range. */
 function ymd(d: Date) {
-  return d.toISOString().slice(0, 10);
+  return format(d, 'yyyy-MM-dd');
 }
 function dur(sec: number) {
   const m = Math.floor(sec / 60);
@@ -51,19 +53,26 @@ export function ReportsView() {
     return p.toString();
   }
 
+  // Only the latest Apply may fill the table: an older, slower response that
+  // lands afterwards would show results for filters no longer on screen.
+  const runSeq = useRef(0);
   async function run() {
+    const seq = ++runSeq.current;
     setLoading(true);
     try {
       const res = await fetch('/api/admin/reports?' + queryString());
       const data = await res.json();
+      if (seq !== runSeq.current) return;
       if (!res.ok) {
         toast.error(data.error ?? 'Failed to load report');
         return;
       }
       setRows(data.rows);
       setSummary(data.summary);
+    } catch {
+      if (seq === runSeq.current) toast.error('Failed to load report');
     } finally {
-      setLoading(false);
+      if (seq === runSeq.current) setLoading(false);
     }
   }
 

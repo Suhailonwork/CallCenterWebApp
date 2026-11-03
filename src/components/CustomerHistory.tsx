@@ -233,7 +233,7 @@ export function CustomerHistory({
               {calls.length === 0 && (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="px-3 py-4 text-center text-slate-400"
                   >
                     No calls.

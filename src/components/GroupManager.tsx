@@ -41,6 +41,8 @@ export function GroupManager() {
       } else {
         toast.error(data.error ?? "Failed to load groups");
       }
+    } catch {
+      toast.error("Failed to load groups");
     } finally {
       setLoading(false);
     }
@@ -88,6 +90,8 @@ export function GroupManager() {
       setAgentIds([]);
       setShowForm(false);
       load();
+    } catch {
+      toast.error("Network error — group not created");
     } finally {
       setSaving(false);
     }
@@ -127,6 +131,8 @@ export function GroupManager() {
       toast.success("Group updated");
       setEditFor(null);
       load();
+    } catch {
+      toast.error("Network error — group not updated");
     } finally {
       setSaving(false);
     }
@@ -139,13 +145,17 @@ export function GroupManager() {
       )
     )
       return;
-    const res = await fetch(`/api/admin/groups/${g.id}`, { method: "DELETE" });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      toast.success("Group deleted");
-      load();
-    } else {
-      toast.error(data.error ?? "Delete failed");
+    try {
+      const res = await fetch(`/api/admin/groups/${g.id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success("Group deleted");
+        load();
+      } else {
+        toast.error(data.error ?? "Delete failed");
+      }
+    } catch {
+      toast.error("Network error — group not deleted");
     }
   }
 

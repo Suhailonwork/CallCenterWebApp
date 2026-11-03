@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { authenticate, isError, ok, fail } from '@/lib/api';
+import { authenticate, isError, ok, fail, failValidation } from '@/lib/api';
 import { pool, query, queryOne } from '@/lib/db';
 import { logAudit } from '@/lib/audit';
 import { tlOwnsCampaign } from '@/lib/groups';
@@ -39,7 +39,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 
   const parsed = schema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return fail('Invalid data');
+  if (!parsed.success) return failValidation(parsed.error, 'Invalid data');
   const d = parsed.data;
 
   if (
