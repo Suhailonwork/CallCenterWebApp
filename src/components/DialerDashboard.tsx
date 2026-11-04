@@ -164,11 +164,21 @@ function Stat({
  * Live view of the predictive dialer: what is on the wire right now, where
  * every agent is in the state machine, how the gateways are loaded, and how
  * the campaigns' lead queues are draining.
+ *
+ * `endpoint` lets the same view be scoped: the admin console reads the
+ * platform-wide feed, while a Team Lead reads one limited to their own groups.
  */
-export function DialerDashboard() {
+export function DialerDashboard({
+  endpoint = "/api/admin/dialer/live",
+}: {
+  endpoint?: string;
+} = {}) {
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  // Which campaign the live detail (calls on the wire, agent states) is scoped
+  // to. "all" shows every campaign the feed carries.
+  const [campaignFilter, setCampaignFilter] = useState<number | "all">("all");
 
   const inFlight = useRef(false);
   const load = useCallback(async (background = false) => {
@@ -177,7 +187,7 @@ export function DialerDashboard() {
     if (inFlight.current || (background && document.hidden)) return;
     inFlight.current = true;
     try {
-      const res = await fetch("/api/admin/dialer/live", { cache: "no-store" });
+      const res = await fetch(endpoint, { cache: "no-store" });
       const json = await res.json();
       if (!res.ok) {
         setError(json.error ?? "Failed to load dialer state");
@@ -190,7 +200,7 @@ export function DialerDashboard() {
     } finally {
       inFlight.current = false;
     }
-  }, []);
+  }, [endpoint]);
 
   useEffect(() => {
     load();
@@ -210,7 +220,18 @@ export function DialerDashboard() {
     return <p className="text-sm text-slate-400">Loading dialer state…</p>;
   }
 
-  const agents = data.agents ?? [];
+  // Campaign id -> name, so the live detail can be labelled and filtered by
+  // campaign name rather than by the opaque numeric id the engine reports.
+  const campaignName = (id: number | null) =>
+    data.campaigns.find((c) => c.id === id)?.name ?? (id == null ? "—" : `#${id}`);
+  const inScope = (id: number | null) =>
+    campaignFilter === "all" || id === campaignFilter;
+
+  const allAgents = data.agents ?? [];
+  // The live detail (calls + agents) honours the campaign filter; the KPIs and
+  // queue tables below stay platform-wide for the selected feed.
+  const calls = data.calls.filter((c) => inScope(c.campaignId));
+  const agents = allAgents.filter((a) => inScope(a.campaignId));
   const ready = agents.filter((a) => a.agentState === "READY").length;
   const incall = agents.filter((a) => a.agentState === "INCALL").length;
   const wrapup = agents.filter((a) => a.agentState === "WRAPUP").length;
@@ -239,6 +260,21 @@ export function DialerDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <select
+            value={campaignFilter}
+            onChange={(e) =>
+              setCampaignFilter(e.target.value === "all" ? "all" : Number(e.target.value))
+            }
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500"
+            title="Scope the live detail to one campaign"
+          >
+            <option value="all">All campaigns</option>
+            {data.campaigns.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
           <span
             className={
               "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset " +
@@ -276,8 +312,8 @@ export function DialerDashboard() {
         <Stat
           icon={<PhoneCall className="h-3.5 w-3.5" />}
           label="Calls on the wire"
-          value={data.calls.length}
-          hint={`${data.calls.filter((c) => c.state === "connected").length} talking`}
+          value={calls.length}
+          hint={`${calls.filter((c) => c.state === "connected").length} talking`}
           tone="indigo"
         />
         <Stat
@@ -303,15 +339,23 @@ export function DialerDashboard() {
 
       {/* Calls in flight */}
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200/60">
-        <h2 className="mb-3 text-sm font-semibold text-slate-700">Calls in flight</h2>
-        {data.calls.length === 0 ? (
+        <h2 className="mb-3 text-sm font-semibold text-slate-700">
+          Calls in flight
+          {campaignFilter !== "all" && (
+            <span className="ml-2 font-normal text-slate-400">
+              · {campaignName(campaignFilter)}
+            </span>
+          )}
+        </h2>
+        {calls.length === 0 ? (
           <p className="text-sm text-slate-400">No calls on the wire right now.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase tracking-wide text-slate-400">
                   <th className="pb-2 font-semibold">Contact</th>
+                  <th className="pb-2 font-semibold">Campaign</th>
                   <th className="pb-2 font-semibold">State</th>
                   <th className="pb-2 font-semibold">Source</th>
                   <th className="pb-2 font-semibold">Agent</th>
@@ -320,8 +364,8 @@ export function DialerDashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {data.calls.map((c) => {
-                  const agent = agents.find((a) => a.id === c.agentId);
+                {calls.map((c) => {
+                  const agent = allAgents.find((a) => a.id === c.agentId);
                   const gw = data.gateways.find((g) => g.id === c.gatewayId);
                   return (
                     <tr key={c.attemptId}>
@@ -331,6 +375,7 @@ export function DialerDashboard() {
                           <span className="ml-2 text-xs text-slate-500">{c.contactName}</span>
                         )}
                       </td>
+                      <td className="py-2 text-xs text-slate-600">{campaignName(c.campaignId)}</td>
                       <td className="py-2">
                         <span
                           className={
@@ -359,7 +404,14 @@ export function DialerDashboard() {
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Agents */}
         <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200/60">
-          <h2 className="mb-3 text-sm font-semibold text-slate-700">Agent states</h2>
+          <h2 className="mb-3 text-sm font-semibold text-slate-700">
+            Agent states
+            {campaignFilter !== "all" && (
+              <span className="ml-2 font-normal text-slate-400">
+                · {campaignName(campaignFilter)}
+              </span>
+            )}
+          </h2>
           {agents.length === 0 ? (
             <p className="text-sm text-slate-400">No agents signed on.</p>
           ) : (
@@ -367,7 +419,10 @@ export function DialerDashboard() {
               {agents.map((a) => (
                 <span
                   key={a.id}
-                  title={a.pauseReason ?? undefined}
+                  title={
+                    [campaignName(a.campaignId), a.pauseReason].filter(Boolean).join(" · ") ||
+                    undefined
+                  }
                   className={
                     "rounded-full px-3 py-1 text-xs font-medium " +
                     (AGENT_STYLE[a.agentState] ?? "bg-slate-100 text-slate-600")
@@ -459,7 +514,17 @@ export function DialerDashboard() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {data.campaigns.map((c) => (
-                <tr key={c.id}>
+                <tr
+                  key={c.id}
+                  onClick={() =>
+                    setCampaignFilter((prev) => (prev === c.id ? "all" : c.id))
+                  }
+                  className={
+                    "cursor-pointer " +
+                    (campaignFilter === c.id ? "bg-indigo-50" : "hover:bg-slate-50")
+                  }
+                  title="Click to scope the live detail to this campaign"
+                >
                   <td className="py-2 font-medium text-slate-800">{c.name}</td>
                   <td className="py-2 text-xs text-slate-500">{c.dialer_type}</td>
                   {/* The engine's live figure, not the stored column: a
