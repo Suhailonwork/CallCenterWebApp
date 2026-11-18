@@ -270,8 +270,8 @@ export function RealtimeDashboard() {
         </div>
       </div>
 
-      {/* top row */}
-      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+      {/* one continuous grid — 3 cards per row at desktop, 2 at tablet, 1 on phone */}
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
         {/* agent status */}
         <Card icon={<Users className="h-4 w-4" />} title="Agent Status">
           <div className="grid grid-cols-2 gap-3">
@@ -344,10 +344,7 @@ export function RealtimeDashboard() {
             </ol>
           )}
         </Card>
-      </div>
 
-      {/* bottom row */}
-      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
         {/* dispositions */}
         <Card icon={<CircleDashed className="h-4 w-4" />} title="Dispositions (today)">
           <div className="flex h-full flex-col items-center gap-4">
