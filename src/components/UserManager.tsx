@@ -120,7 +120,7 @@ export function UserManager() {
         editUser
           ? 'User updated'
           : data.extension
-            ? `Employee created — SIP extension ${data.extension}`
+            ? `Employee created - SIP extension ${data.extension}`
             : 'User created',
       );
       setModal(null);
