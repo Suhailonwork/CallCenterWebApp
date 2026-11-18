@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "react-toastify";
+import { Info } from "lucide-react";
 import type { CampaignRow, ListRow } from "@/types";
 import { FieldsEditor } from "./FieldsEditor";
 import { DEFAULT_LIST_FIELDS } from "@/lib/listFields";
@@ -45,6 +46,10 @@ export function ListsManager() {
   // Guards a slow reset-preview fetch from populating a different list's dialog.
   const resetReq = useRef(0);
 
+  // Which list's status breakdown popover is open. The badges are hidden until
+  // the agent opens the info button next to that list's lead count.
+  const [statusOpen, setStatusOpen] = useState<number | null>(null);
+
   async function load() {
     setLoading(true);
     try {
@@ -77,6 +82,17 @@ export function ListsManager() {
       if (!busy) setEditFor(null);
     } else setShowForm(false);
   });
+
+  // Close the status popover on Escape, or on a click anywhere outside it.
+  useEscapeKey(statusOpen !== null, () => setStatusOpen(null));
+  useEffect(() => {
+    if (statusOpen === null) return;
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as Element)?.closest?.("[data-status-pop]")) setStatusOpen(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [statusOpen]);
 
   const visible = useMemo(
     () =>
@@ -373,7 +389,6 @@ export function ListsManager() {
                 <th className="py-2 pr-3">Fields</th>
                 <th className="py-2 pr-3">Dialing</th>
                 <th className="py-2 pr-3">Leads</th>
-                <th className="py-2 pr-3">Statuses</th>
                 {/* <th className="py-2 pr-3">Last call</th> */}
                 <th className="py-2">Actions</th>
               </tr>
@@ -410,21 +425,47 @@ export function ListsManager() {
                     </button>
                   </td>
                   <td className="py-2 pr-3">
-                    <span className="font-medium">{l.lead_count}</span>
-                    <span className="ml-1 text-xs text-slate-400">
-                      ({l.fresh_count} fresh)
-                    </span>
-                  </td>
-                  <td className="py-2 pr-3">
-                    <div className="flex max-w-[220px] flex-wrap gap-1">
-                      {Object.entries(l.status_counts ?? {}).map(([s, n]) => (
-                        <span
-                          key={s}
-                          className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600"
-                        >
-                          {s}: {n}
-                        </span>
-                      ))}
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium">{l.lead_count}</span>
+                      <span className="text-xs text-slate-400">
+                        ({l.fresh_count} fresh)
+                      </span>
+                      {Object.keys(l.status_counts ?? {}).length > 0 && (
+                        <div className="relative" data-status-pop>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStatusOpen((prev) => (prev === l.id ? null : l.id))
+                            }
+                            aria-expanded={statusOpen === l.id}
+                            title="Show status breakdown"
+                            className={`flex h-5 w-5 items-center justify-center rounded-full transition ${
+                              statusOpen === l.id
+                                ? "bg-indigo-100 text-indigo-600"
+                                : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                            }`}
+                          >
+                            <Info className="h-3.5 w-3.5" />
+                          </button>
+                          {statusOpen === l.id && (
+                            <div className="absolute left-0 top-full z-20 mt-1.5 w-56 rounded-lg border border-slate-200 bg-white p-2.5 shadow-lg">
+                              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                Status breakdown
+                              </p>
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries(l.status_counts ?? {}).map(([s, n]) => (
+                                  <span
+                                    key={s}
+                                    className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600"
+                                  >
+                                    {s}: {n}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </td>
                   {/* <td className="py-2 pr-3 text-xs text-slate-500">
