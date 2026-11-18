@@ -22,9 +22,11 @@ export async function GET() {
 }
 
 const createSchema = z.object({
+  // Free-form by request: name/email/password accept whatever is typed
+  // (e.g. an employee ID like "SPSY2172" used in place of an email).
   name: z.string().min(1).max(120),
-  email: z.string().email(),
-  password: z.string().min(8).max(100),
+  email: z.string().min(1).max(190),
+  password: z.string().min(1).max(100),
   role: z.enum(['admin', 'manager', 'tl', 'employee']),
   teamId: z.number().int().positive().nullable().optional(),
   shiftId: z.number().int().positive().nullable().optional(),

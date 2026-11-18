@@ -260,7 +260,7 @@ export function UserManager() {
 
             <label className="mt-3 block text-sm font-medium text-slate-700">Email</label>
             <input
-              type="email"
+              type="text"
               value={email}
               disabled={!!editUser}
               onChange={(e) => setEmail(e.target.value)}
@@ -274,7 +274,7 @@ export function UserManager() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={editUser ? '••••••••' : 'min. 8 characters'}
+              placeholder={editUser ? '••••••••' : 'Password'}
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
 
