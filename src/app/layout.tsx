@@ -4,8 +4,13 @@ import type { Metadata } from 'next';
 import { ToastProvider } from '@/components/ToastProvider';
 
 export const metadata: Metadata = {
-  title: 'Call Center Platform',
-  description: 'Call center management system',
+  title: 'SSS Communications',
+  description: 'SSS Communications call center',
+  icons: {
+    icon: '/sss-logo.webp',
+    shortcut: '/sss-logo.webp',
+    apple: '/sss-logo.webp',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
