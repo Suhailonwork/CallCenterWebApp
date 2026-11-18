@@ -13,7 +13,8 @@ import type { Role } from '@/types';
 export const runtime = 'nodejs';
 
 const schema = z.object({
-  email: z.string().email(),
+  // Username may be a plain employee ID (e.g. "SPSY3638"), not only an email.
+  email: z.string().min(1),
   password: z.string().min(1),
 });
 
