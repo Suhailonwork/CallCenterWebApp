@@ -15,6 +15,35 @@ function engine(): any {
   return (globalThis as any).__ccEngine ?? null;
 }
 
+export interface AgentPresence {
+  id: number;
+  name: string;
+  /** READY | INCALL | WRAPUP | PAUSE */
+  agentState: string;
+  extension: string | null;
+  campaignId: number | null;
+}
+
+/**
+ * The live agent-presence roster straight from the Socket.IO registry: exactly
+ * the employees whose browser holds an open connection right now. This is the
+ * honest "logged in" source — it adds an agent on connect and drops them on
+ * disconnect — and it is independent of whether the predictive engine is
+ * running. Returns null only when this code runs outside the server process
+ * (e.g. `next build`), where there is no registry to read.
+ */
+export function liveAgentPresence(): AgentPresence[] | null {
+  const reg = (globalThis as any).__ccRegistry;
+  if (reg && typeof reg.snapshot === 'function') {
+    try {
+      return reg.snapshot() as AgentPresence[];
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
  * Nudge the predictive engine to run a dial cycle immediately instead of
  * waiting for its next timer tick, dropping its campaign/gateway caches first.
