@@ -1149,7 +1149,7 @@ import { isEngineDriven, isPredictive } from "@/lib/dialerModes";
 import type { Campaign, Contact, SipConfig, CallDisposition, DialerType } from "@/types";
 import { setCallActive } from "@/components/SessionGuard";
 import { CallHistoryPopup } from "@/components/CallHistoryPopup";
-import { CustomerSearchModal } from "@/components/CustomerSearchModal";
+import { CustomerSearchModal, type SearchResult } from "@/components/CustomerSearchModal";
 
 /**
  * Normalize a contact's custom_fields into ordered [label, value] entries.
@@ -1824,13 +1824,33 @@ export function Dialer() {
   // Dial a customer pulled up from the search box. Treated like a manual dial:
   // it goes out on the current campaign's gateway and its wrap-up is recorded
   // against the number, independent of whichever campaign the data came from.
-  function callFromSearch(phone: string, name: string | null) {
+  // The whole record is put on screen so the agent sees who they are talking to
+  // and every field for the duration of the call.
+  function callFromSearch(phone: string, result: SearchResult) {
     if (callFromSearchReason) {
       toast.warning(callFromSearchReason);
       return;
     }
-    const started = startCall(phone.trim(), name, campaignRef.current?.id ?? null, null);
+    // Hand back any lead currently reserved to this agent before taking over
+    // the screen with the searched customer.
+    const held = contactRef.current;
+    if (held && held.id > 0 && held.id !== result.id && !inCall && !postCall) {
+      void releaseLead(held.id, "closed");
+    }
+    // Show the searched customer on screen. custom_fields keeps the search's
+    // ordered [label, value] shape, which the field grid renders directly.
+    setContact({
+      id: result.id ?? 0,
+      phone_number: result.phone,
+      name: result.name,
+      email: result.email,
+      company: result.company,
+      custom_fields: result.fields,
+      campaign_id: campaignRef.current?.id ?? null,
+    });
+    const started = startCall(phone.trim(), result.name, campaignRef.current?.id ?? null, null);
     if (started) setSearchOpen(false);
+    else setContact(held ?? null); // dial refused — don't leave a stray card
   }
 
   async function savePostCall() {
@@ -1947,7 +1967,7 @@ export function Dialer() {
   /** Persist the alternative number against the loaded lead. */
   async function saveAlt(): Promise<void> {
     const c = contactRef.current;
-    if (!c || altSaving) return;
+    if (!c || c.id <= 0 || altSaving) return;
     setAltSaving(true);
     try {
       const res = await fetch("/api/employee/leads/alt", {
@@ -2246,7 +2266,7 @@ export function Dialer() {
                 <History className="h-4 w-4" />
                 History
               </button>
-              {!editing && (
+              {!editing && contact.id > 0 && (
                 <button
                   onClick={startEditFields}
                   className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
@@ -2293,13 +2313,15 @@ export function Dialer() {
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
                 />
               </div>
-              <button
-                onClick={saveAlt}
-                disabled={altSaving}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {altSaving ? "Saving…" : "Save"}
-              </button>
+              {contact.id > 0 && (
+                <button
+                  onClick={saveAlt}
+                  disabled={altSaving}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {altSaving ? "Saving…" : "Save"}
+                </button>
+              )}
               <button
                 onClick={callAlt}
                 disabled={!altNumber.trim() || callFromSearchReason !== null}

@@ -73,7 +73,9 @@ export function CustomerSearchModal({
   canCall: boolean;
   /** Why calling is unavailable, shown on the disabled button. */
   callHint?: string;
-  onCall: (phone: string, name: string | null) => void;
+  /** Dial a number for this customer; the whole record is passed so the
+   *  dialer can show the customer on screen during the call. */
+  onCall: (phone: string, result: SearchResult) => void;
   onHistory: (phone: string, name: string | null) => void;
   /** Persist an alternative number against a lead; resolves false on failure. */
   onSaveAlt: (leadId: number, altNumber: string) => Promise<boolean>;
@@ -414,7 +416,7 @@ export function CustomerSearchModal({
                             await onSaveAlt(r.id, alt[r.phone] ?? "");
                             setSavingAlt(null);
                           }
-                          onCall(num, r.name);
+                          onCall(num, r);
                         }}
                         disabled={!canCall || !(alt[r.phone] ?? "").trim() || savingAlt === r.phone}
                         title={!canCall ? callHint : undefined}
@@ -428,7 +430,7 @@ export function CustomerSearchModal({
                     {/* Actions */}
                     <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
                       <button
-                        onClick={() => onCall(r.phone, r.name)}
+                        onClick={() => onCall(r.phone, r)}
                         disabled={!canCall}
                         title={!canCall ? callHint : undefined}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
