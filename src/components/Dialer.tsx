@@ -1131,6 +1131,9 @@ import {
   Coffee,
   Play,
   History,
+  Search,
+  Pencil,
+  X,
 } from "lucide-react";
 import { SipPhone, type CallState } from "@/lib/sipPhone";
 import { getSocket, useSocketEvent } from "@/lib/useSocket";
@@ -1146,6 +1149,7 @@ import { isEngineDriven, isPredictive } from "@/lib/dialerModes";
 import type { Campaign, Contact, SipConfig, CallDisposition, DialerType } from "@/types";
 import { setCallActive } from "@/components/SessionGuard";
 import { CallHistoryPopup } from "@/components/CallHistoryPopup";
+import { CustomerSearchModal } from "@/components/CustomerSearchModal";
 
 /**
  * Normalize a contact's custom_fields into ordered [label, value] entries.
@@ -1165,6 +1169,17 @@ function asEntries(v: unknown): [string, unknown][] {
     return Object.entries(parsed as Record<string, unknown>);
   }
   return [];
+}
+
+/** The custom_fields key the agent's alternative number is stored under. */
+const ALT_FIELD = "Alt Number";
+
+/** Pull the saved alternative number out of a contact's custom_fields, if any. */
+function altFromCustomFields(v: unknown): string {
+  for (const [k, val] of asEntries(v)) {
+    if (k.trim().toLowerCase() === ALT_FIELD.toLowerCase()) return String(val ?? "");
+  }
+  return "";
 }
 
 const DIALER_LABELS: Record<string, string> = {
@@ -1249,6 +1264,14 @@ export function Dialer() {
   const [campaignsLoaded, setCampaignsLoaded] = useState(false);
   const [contact, setContact] = useState<Contact | null>(null);
   const [historyFor, setHistoryFor] = useState<{ phone: string; name?: string | null } | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [altNumber, setAltNumber] = useState("");
+  const [altSaving, setAltSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editFields, setEditFields] = useState<[string, string][]>([]);
+  const [savingFields, setSavingFields] = useState(false);
   const [autoRunning, setAutoRunning] = useState(false);
   const [complete, setComplete] = useState(false);
   const [gatewayReachable, setGatewayReachable] = useState<boolean | null>(null);
@@ -1316,6 +1339,19 @@ export function Dialer() {
   // as a dependency — a `const` referenced before its initialiser would throw.
   const inCall =
     callState === "connecting" || callState === "ringing" || callState === "in-call";
+
+  // Why a search / manual dial can't go out right now — null when it can.
+  const callFromSearchReason: string | null = !registered
+    ? "Phone is not registered yet"
+    : !campaign
+      ? "No campaign available to place the call on"
+      : autoRunning
+        ? "Take a break before placing a manual call"
+        : inCall
+          ? "Finish the current call first"
+          : gatewayReachable === false
+            ? gatewayWarning ?? "Gateway is offline"
+            : null;
 
   const handleCallState = useCallback((s: CallState) => {
     setCallState(s);
@@ -1785,6 +1821,18 @@ export function Dialer() {
     }
   }
 
+  // Dial a customer pulled up from the search box. Treated like a manual dial:
+  // it goes out on the current campaign's gateway and its wrap-up is recorded
+  // against the number, independent of whichever campaign the data came from.
+  function callFromSearch(phone: string, name: string | null) {
+    if (callFromSearchReason) {
+      toast.warning(callFromSearchReason);
+      return;
+    }
+    const started = startCall(phone.trim(), name, campaignRef.current?.id ?? null, null);
+    if (started) setSearchOpen(false);
+  }
+
   async function savePostCall() {
     if (!postCall || saving) return;
     // The disposition reason is what drives the dialing rules, so it is
@@ -1887,7 +1935,112 @@ export function Dialer() {
     if (contactPhone) setHistoryFor((h) => (h && h.phone !== contactPhone ? null : h));
   }, [contactPhone]);
 
-  const customEntries = contact ? asEntries(contact.custom_fields).filter(([, v]) => v !== null && v !== "" && v !== undefined) : [];
+  // Seed the alternative-number box from whatever is already on the record, so
+  // a previously saved alt number is there to dial without re-typing it.
+  const contactId = contact?.id;
+  useEffect(() => {
+    setAltNumber(contact ? altFromCustomFields(contact.custom_fields) : "");
+    setEditing(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactId]);
+
+  /** Persist the alternative number against the loaded lead. */
+  async function saveAlt(): Promise<void> {
+    const c = contactRef.current;
+    if (!c || altSaving) return;
+    setAltSaving(true);
+    try {
+      const res = await fetch("/api/employee/leads/alt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: c.id, altNumber }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(data?.error ?? "Could not save the alternative number");
+        return;
+      }
+      // Keep the in-memory contact in step so the field list reflects the save.
+      setContact((cur) =>
+        cur && cur.id === c.id ? { ...cur, custom_fields: data.custom_fields } : cur,
+      );
+      toast.success(altNumber.trim() ? "Alternative number saved" : "Alternative number cleared");
+    } catch {
+      toast.error("Network error while saving");
+    } finally {
+      setAltSaving(false);
+    }
+  }
+
+  /** Dial the alternative number (manual-style), saving it first. */
+  function callAlt() {
+    const target = altNumber.trim();
+    if (!target) return;
+    if (callFromSearchReason) {
+      toast.warning(callFromSearchReason);
+      return;
+    }
+    if (contactRef.current) void saveAlt();
+    startCall(target, contact?.name ?? null, campaignRef.current?.id ?? null, null);
+  }
+
+  /* ---- edit the record's data fields straight in the database ---- */
+
+  /** Open the editor, seeded with every field on the record (minus the alt
+   *  number, which has its own box). Empty template fields are shown too, so a
+   *  blank reference can be filled in. */
+  function startEditFields() {
+    const c = contactRef.current;
+    if (!c) return;
+    setEditName(c.name ?? "");
+    setEditFields(
+      asEntries(c.custom_fields)
+        .filter(([k]) => k.trim().toLowerCase() !== ALT_FIELD.toLowerCase())
+        .map(([k, v]) => [k, v === null || v === undefined ? "" : String(v)]),
+    );
+    setEditing(true);
+  }
+
+  async function saveFields() {
+    const c = contactRef.current;
+    if (!c || savingFields) return;
+    setSavingFields(true);
+    try {
+      const fields: Record<string, string> = {};
+      for (const [k, v] of editFields) fields[k] = v;
+      const res = await fetch("/api/employee/leads/fields", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId: c.id, fields, name: editName }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(data?.error ?? "Could not save the changes");
+        return;
+      }
+      setContact((cur) =>
+        cur && cur.id === c.id
+          ? { ...cur, name: data.name ?? cur.name, custom_fields: data.custom_fields }
+          : cur,
+      );
+      setEditing(false);
+      toast.success("Details updated");
+    } catch {
+      toast.error("Network error while saving");
+    } finally {
+      setSavingFields(false);
+    }
+  }
+
+  const customEntries = contact
+    ? asEntries(contact.custom_fields).filter(
+        ([k, v]) =>
+          v !== null &&
+          v !== "" &&
+          v !== undefined &&
+          k.trim().toLowerCase() !== ALT_FIELD.toLowerCase(), // shown in its own editable box
+      )
+    : [];
 
   return (
     <div className="w-full">
@@ -1919,6 +2072,21 @@ export function Dialer() {
           <p className="text-[11px] leading-tight text-slate-500">
             {sip?.extension ? `Ext ${sip.extension}` : "Loading…"}
           </p>
+        </div>
+
+        {/* Lookup — one box for loan / phone / name, across every campaign */}
+        <div className="relative min-w-[11rem] max-w-[18rem] flex-1 sm:flex-none sm:basis-56">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          <input
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              if (!searchOpen) setSearchOpen(true);
+            }}
+            onClick={() => setSearchOpen(true)}
+            placeholder="Search loan / phone / name"
+            className="w-full rounded-lg border border-slate-300 bg-white py-1.5 pl-8 pr-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
         </div>
 
         {/* Campaign — compact, right beside the title */}
@@ -2078,6 +2246,15 @@ export function Dialer() {
                 <History className="h-4 w-4" />
                 History
               </button>
+              {!editing && (
+                <button
+                  onClick={startEditFields}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  <Pencil className="h-4 w-4" />
+                  Edit
+                </button>
+              )}
 
               {/* Manual mode: call this reserved contact, or move to the next */}
               {campaign?.dialer_type === "manual" && !inCall && !postCall && (
@@ -2101,23 +2278,109 @@ export function Dialer() {
               )}
             </div>
 
-            {/* Every field on the record, laid out across the full width */}
-            {customEntries.length > 0 && (
-              <div className="grid gap-2 border-t border-slate-100 pt-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {customEntries.map(([key, val]) => (
-                  <div
-                    key={key}
-                    className="min-w-0 rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-inset ring-slate-200"
-                  >
-                    <p className="truncate text-[10px] font-medium uppercase tracking-wide text-slate-500">
-                      {key}
-                    </p>
-                    <p className="truncate text-sm font-medium text-slate-800" title={String(val)}>
-                      {String(val)}
-                    </p>
-                  </div>
-                ))}
+            {/* Alternative number — the agent types a second number for this
+                customer, saves it to the record, and can dial it on the spot. */}
+            <div className="flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
+              <div className="min-w-[12rem] flex-1">
+                <label className="block text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                  Alternative number
+                </label>
+                <input
+                  value={altNumber}
+                  onChange={(e) => setAltNumber(e.target.value)}
+                  placeholder="Add another number for this customer"
+                  inputMode="tel"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                />
               </div>
+              <button
+                onClick={saveAlt}
+                disabled={altSaving}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {altSaving ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={callAlt}
+                disabled={!altNumber.trim() || callFromSearchReason !== null}
+                title={callFromSearchReason ?? undefined}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Phone className="h-4 w-4" />
+                Call alt
+              </button>
+            </div>
+
+            {/* Record fields — read-only cards, or editable inputs saved to the DB */}
+            {editing ? (
+              <div className="space-y-3 border-t border-slate-100 pt-4">
+                <div className="min-w-0 sm:max-w-sm">
+                  <label className="block text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                    Name
+                  </label>
+                  <input
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                  />
+                </div>
+                {editFields.length > 0 && (
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {editFields.map(([key, val], i) => (
+                      <div key={key} className="min-w-0">
+                        <label className="block truncate text-[10px] font-medium uppercase tracking-wide text-slate-500" title={key}>
+                          {key}
+                        </label>
+                        <input
+                          value={val}
+                          onChange={(e) =>
+                            setEditFields((prev) =>
+                              prev.map((p, idx) => (idx === i ? [p[0], e.target.value] : p)),
+                            )
+                          }
+                          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={saveFields}
+                    disabled={savingFields}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    {savingFields ? "Saving…" : "Save changes"}
+                  </button>
+                  <button
+                    onClick={() => setEditing(false)}
+                    disabled={savingFields}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    <X className="h-4 w-4" />
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              customEntries.length > 0 && (
+                <div className="grid gap-2 border-t border-slate-100 pt-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {customEntries.map(([key, val]) => (
+                    <div
+                      key={key}
+                      className="min-w-0 rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-inset ring-slate-200"
+                    >
+                      <p className="truncate text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                        {key}
+                      </p>
+                      <p className="truncate text-sm font-medium text-slate-800" title={String(val)}>
+                        {String(val)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
           </div>
         ) : (
@@ -2176,6 +2439,37 @@ export function Dialer() {
           </p>
         </div>
       </div>
+
+      {/* ===== Customer lookup ===== */}
+      {searchOpen && (
+        <CustomerSearchModal
+          initialQuery={searchQuery}
+          canCall={callFromSearchReason === null}
+          callHint={callFromSearchReason ?? undefined}
+          onCall={callFromSearch}
+          onHistory={(phone, name) => setHistoryFor({ phone, name })}
+          onSaveAlt={async (leadId, value) => {
+            try {
+              const res = await fetch("/api/employee/leads/alt", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ leadId, altNumber: value }),
+              });
+              if (!res.ok) {
+                const d = await res.json().catch(() => null);
+                toast.error(d?.error ?? "Could not save the alternative number");
+                return false;
+              }
+              toast.success(value.trim() ? "Alternative number saved" : "Alternative number cleared");
+              return true;
+            } catch {
+              toast.error("Network error while saving");
+              return false;
+            }
+          }}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
 
       {/* ===== Wrap-up modal ===== */}
       {historyFor && (
