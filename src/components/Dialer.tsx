@@ -2467,6 +2467,25 @@ export function Dialer() {
               return false;
             }
           }}
+          onSaveFields={async (leadId, fields, name) => {
+            try {
+              const res = await fetch("/api/employee/leads/fields", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ leadId, fields, name }),
+              });
+              const data = await res.json().catch(() => null);
+              if (!res.ok) {
+                toast.error(data?.error ?? "Could not save the changes");
+                return null;
+              }
+              toast.success("Details updated");
+              return { custom_fields: data.custom_fields, name: data.name };
+            } catch {
+              toast.error("Network error while saving");
+              return null;
+            }
+          }}
           onClose={() => setSearchOpen(false)}
         />
       )}

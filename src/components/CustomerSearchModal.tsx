@@ -1,12 +1,35 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Search, X, Phone, History, User } from "lucide-react";
+import { Search, X, Phone, History, User, Pencil, CheckCircle2 } from "lucide-react";
 import { useEscapeKey } from "@/lib/useEscapeKey";
 
 /** custom_fields key the agent's alternative number is stored under. */
 const ALT_FIELD = "Alt Number";
 const isAltKey = (k: string) => k.trim().toLowerCase() === ALT_FIELD.toLowerCase();
+
+/** Turn a record's custom_fields (object or [label,value] array) into pairs. */
+function toFieldPairs(raw: unknown): [string, string][] {
+  let parsed: unknown = raw;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+  let pairs: [string, unknown][] = [];
+  if (Array.isArray(parsed)) {
+    pairs = parsed
+      .filter((p) => Array.isArray(p) && p.length >= 2)
+      .map((p) => [String((p as unknown[])[0]), (p as unknown[])[1]] as [string, unknown]);
+  } else if (parsed && typeof parsed === "object") {
+    pairs = Object.entries(parsed as Record<string, unknown>);
+  }
+  return pairs
+    .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map(([k, v]) => [k, String(v)] as [string, string]);
+}
 
 export interface SearchResult {
   id: number | null;
@@ -42,6 +65,7 @@ export function CustomerSearchModal({
   onCall,
   onHistory,
   onSaveAlt,
+  onSaveFields,
   onClose,
 }: {
   initialQuery?: string;
@@ -53,6 +77,12 @@ export function CustomerSearchModal({
   onHistory: (phone: string, name: string | null) => void;
   /** Persist an alternative number against a lead; resolves false on failure. */
   onSaveAlt: (leadId: number, altNumber: string) => Promise<boolean>;
+  /** Persist edited fields/name against a lead; resolves the updated record or null. */
+  onSaveFields: (
+    leadId: number,
+    fields: Record<string, string>,
+    name: string,
+  ) => Promise<{ custom_fields: unknown; name?: string | null } | null>;
   onClose: () => void;
 }) {
   const [q, setQ] = useState(initialQuery);
@@ -62,7 +92,47 @@ export function CustomerSearchModal({
   const [open, setOpen] = useState<string | null>(null); // expanded card's phone
   const [alt, setAlt] = useState<Record<string, string>>({}); // phone -> alt number box
   const [savingAlt, setSavingAlt] = useState<string | null>(null); // phone being saved
+  const [editPhone, setEditPhone] = useState<string | null>(null); // card being edited
+  const [editVals, setEditVals] = useState<[string, string][]>([]); // field edits
+  const [editName, setEditName] = useState("");
+  const [savingFields, setSavingFields] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  /** Open the field editor for one result, seeded from its record. */
+  function startEdit(r: SearchResult) {
+    setEditName(r.name ?? "");
+    setEditVals(r.fields.filter(([k]) => !isAltKey(k)).map(([k, v]) => [k, v]));
+    setEditPhone(r.phone);
+  }
+
+  /** Save edited fields, refresh the card in place, and close the editor. */
+  async function saveEdit(r: SearchResult) {
+    if (r.id === null || savingFields) return;
+    setSavingFields(true);
+    try {
+      const fields: Record<string, string> = {};
+      for (const [k, v] of editVals) fields[k] = v;
+      const updated = await onSaveFields(r.id, fields, editName);
+      if (!updated) return; // the handler already reported the failure
+      const pairs = toFieldPairs(updated.custom_fields);
+      setResults((prev) =>
+        prev
+          ? prev.map((x) =>
+              x.phone === r.phone
+                ? {
+                    ...x,
+                    name: updated.name ?? x.name,
+                    fields: pairs,
+                  }
+                : x,
+            )
+          : prev,
+      );
+      setEditPhone(null);
+    } finally {
+      setSavingFields(false);
+    }
+  }
 
   // Seed each result's alt box from whatever is already stored on the record.
   useEffect(() => {
@@ -73,6 +143,7 @@ export function CustomerSearchModal({
       if (found) seed[r.phone] = found[1];
     }
     setAlt(seed);
+    setEditPhone(null); // a fresh result set closes any open editor
   }, [results]);
 
   useEscapeKey(true, onClose);
@@ -216,21 +287,87 @@ export function CustomerSearchModal({
                       </div>
                     )}
 
-                    {r.fields.filter(([k]) => !isAltKey(k)).length > 0 ? (
-                      <div className="grid gap-1.5 sm:grid-cols-2">
-                        {r.fields.filter(([k]) => !isAltKey(k)).map(([k, v]) => (
-                          <div
-                            key={k}
-                            className="min-w-0 rounded-lg bg-slate-50 px-2.5 py-1.5 ring-1 ring-inset ring-slate-200"
-                          >
-                            <p className="truncate text-[10px] font-medium uppercase tracking-wide text-slate-500">
-                              {k}
-                            </p>
-                            <p className="truncate text-sm font-medium text-slate-800" title={v}>
-                              {v}
-                            </p>
+                    {editPhone === r.phone ? (
+                      /* Edit mode — change the name and any field, saved to the DB */
+                      <div className="space-y-2.5">
+                        <div>
+                          <label className="block text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                            Name
+                          </label>
+                          <input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                          />
+                        </div>
+                        {editVals.length > 0 && (
+                          <div className="grid gap-1.5 sm:grid-cols-2">
+                            {editVals.map(([k, v], i) => (
+                              <div key={k} className="min-w-0">
+                                <label
+                                  className="block truncate text-[10px] font-medium uppercase tracking-wide text-slate-500"
+                                  title={k}
+                                >
+                                  {k}
+                                </label>
+                                <input
+                                  value={v}
+                                  onChange={(e) =>
+                                    setEditVals((prev) =>
+                                      prev.map((p, idx) => (idx === i ? [p[0], e.target.value] : p)),
+                                    )
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                                />
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        )}
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => saveEdit(r)}
+                            disabled={savingFields}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                            {savingFields ? "Saving…" : "Save changes"}
+                          </button>
+                          <button
+                            onClick={() => setEditPhone(null)}
+                            disabled={savingFields}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3.5 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
+                          >
+                            <X className="h-4 w-4" />
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : r.fields.filter(([k]) => !isAltKey(k)).length > 0 ? (
+                      <div>
+                        <div className="grid gap-1.5 sm:grid-cols-2">
+                          {r.fields.filter(([k]) => !isAltKey(k)).map(([k, v]) => (
+                            <div
+                              key={k}
+                              className="min-w-0 rounded-lg bg-slate-50 px-2.5 py-1.5 ring-1 ring-inset ring-slate-200"
+                            >
+                              <p className="truncate text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                {k}
+                              </p>
+                              <p className="truncate text-sm font-medium text-slate-800" title={v}>
+                                {v}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        {r.id !== null && (
+                          <button
+                            onClick={() => startEdit(r)}
+                            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                          >
+                            <Pencil className="h-4 w-4" />
+                            Edit details
+                          </button>
+                        )}
                       </div>
                     ) : (
                       <p className="flex items-center gap-1.5 text-xs text-slate-400">
